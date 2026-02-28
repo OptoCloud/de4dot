@@ -10,3 +10,9 @@ launchSettings.json
 *.user
 .idea/
 .claude/
+
+# Test artifacts
+*.dll
+!**/bin/**/*.dll
+dnSpy/
+dnSpy-*.zip
