@@ -130,6 +130,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		public override string Name => obfuscatorName;
 		protected override bool CanInlineMethods => startedDeobfuscating ? options.InlineMethods : true;
 
+		/// <summary>
+		/// Returns per-method block deobfuscators run during control flow deobfuscation.
+		/// Order matters: DotNetReactorCflowDeobfuscator (existing v4 patterns) runs first,
+		/// then XorSwitchCflowDeobfuscator (v6.x XOR-keyed switch state machines), then
+		/// MethodCallInliner (inline small helper methods after cflow is resolved).
+		/// </summary>
 		public override IEnumerable<IBlocksDeobfuscator> BlocksDeobfuscators {
 			get {
 				var list = new List<IBlocksDeobfuscator>();
@@ -226,6 +232,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			proxyCallFixer.FindDelegateCreator(module);
 			stringDecrypter = new StringDecrypter(module);
 			stringDecrypter.Find(DeobfuscatedFile);
+			// Scan for v6.x generic constant decrypter methods: !!0 Method<T>(int32)
 			genericStringDecrypter = new GenericStringDecrypter(module);
 			genericStringDecrypter.Find();
 			booleanDecrypter = new BooleanDecrypter(module);
@@ -435,6 +442,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			newOne.methodsDecrypter = new MethodsDecrypter(module, methodsDecrypter);
 			newOne.proxyCallFixer = new ProxyCallFixer(module, proxyCallFixer);
 			newOne.stringDecrypter = new StringDecrypter(module, stringDecrypter);
+			// Re-detect generic decrypter methods in the reloaded module (new metadata tokens)
 			newOne.genericStringDecrypter = new GenericStringDecrypter(module);
 			newOne.genericStringDecrypter.Find();
 			newOne.booleanDecrypter = new BooleanDecrypter(module, booleanDecrypter);
@@ -516,8 +524,10 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			proxyCallFixer.Find();
 			proxyCallFixer.DeobfuscateAll();
 
-			// Initialize generic string decrypter - uses dynamic assembly loading
-			// to extract the byte array that the .cctor initializes at runtime.
+			// Initialize generic string decrypter AFTER proxy call resolution (proxyCallFixer above).
+			// Uses Assembly.Load() to dynamically load the assembly, triggering the .cctor which
+			// initializes the runtime byte[] data field via XorShift PRNG + block XOR decryption.
+			// The field value is then read via reflection (Module.ResolveField).
 			if (genericStringDecrypter.Detected)
 				genericStringDecrypter.Initialize(fileData ?? DeobUtils.ReadModule(module));
 
@@ -552,6 +562,9 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 					});
 				}
 			}
+			// Register generic decrypter methods with the static string inliner.
+			// Each call like Method<string>(193412188) will be resolved to a decrypted string
+			// using the per-method MUL/XOR constants and the shared runtime byte[] data.
 			if (genericStringDecrypter.Initialized) {
 				foreach (var dm in genericStringDecrypter.DecrypterMethods) {
 					staticStringInliner.Add(dm.method, (method2, gim, args) => {
@@ -730,6 +743,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			FindAndRemoveInlinedMethods();
 		}
 
+		/// <summary>
+		/// Returns metadata tokens for all string decrypter methods (both standard and generic).
+		/// Used by the DynamicStringInliner to register methods with the AssemblyData subprocess,
+		/// and by the pipeline to know which methods should be treated as string decrypters.
+		/// </summary>
 		public override IEnumerable<int> GetStringDecrypterMethods() {
 			var list = new List<int>();
 			foreach (var info in stringDecrypter.DecrypterInfos)

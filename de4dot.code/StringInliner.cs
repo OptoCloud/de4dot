@@ -26,6 +26,11 @@ using de4dot.blocks;
 
 namespace de4dot.code {
 	public abstract class StringInlinerBase : MethodReturnValueInliner {
+		/// <summary>
+		/// Checks whether a MethodSpec is a generic instantiation with a single type argument
+		/// of System.String (i.e., Method&lt;string&gt;). Used to match .NET Reactor v6.x generic
+		/// decrypter calls like !!0 DecryptMethod&lt;string&gt;(int32).
+		/// </summary>
 		protected static bool IsGenericStringInstantiation(MethodSpec gim) {
 			if (gim == null)
 				return false;
@@ -48,14 +53,17 @@ namespace de4dot.code {
 				int ldstrIndex = callResult.callStartIndex;
 				block.Replace(ldstrIndex, num, OpCodes.Ldstr.ToInstruction(decryptedString));
 
-				// If it's followed by castclass string, remove it
+				// .NET Reactor sometimes emits castclass [mscorlib]System.String after
+				// the generic decrypter call (since the return type is !!0, not string).
+				// Remove it since we've already inlined the ldstr.
 				if (ldstrIndex + 1 < block.Instructions.Count) {
 					var instr = block.Instructions[ldstrIndex + 1];
 					if (instr.OpCode.Code == Code.Castclass && instr.Operand.ToString() == "System.String")
 						block.Remove(ldstrIndex + 1, 1);
 				}
 
-				// If it's followed by String.Intern(), then nop out that call
+				// .NET Reactor wraps some decrypted strings in String.Intern() to deduplicate
+				// at runtime. Since the string is now a compile-time constant, Intern is unnecessary.
 				if (ldstrIndex + 1 < block.Instructions.Count) {
 					var instr = block.Instructions[ldstrIndex + 1];
 					if (instr.OpCode.Code == Code.Call) {

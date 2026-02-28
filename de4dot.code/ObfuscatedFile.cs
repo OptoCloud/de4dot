@@ -332,8 +332,17 @@ namespace de4dot.code {
 			return list;
 		}
 
+		/// <summary>
+		/// Maps method full names to their definitions for inline candidate proxy methods.
+		/// These are trivial wrapper methods (ldarg0..ldargN, call/callvirt/newobj, ret)
+		/// that .NET Reactor creates as call proxies. We inline them by replacing the Call
+		/// instruction at each call site with the actual target opcode+operand.
+		/// </summary>
 		private Dictionary<string, MethodDef> inlineCandidate;
 		public void DeobfuscateBegin() {
+			// Find all inline candidate methods: static methods whose body is exactly
+			// ldarg_0, ldarg_1, ..., ldarg_N, call/callvirt/newobj <target>, ret.
+			// These are proxy wrappers that just forward arguments to another method.
 			inlineCandidate = new();
 			foreach (var m in GetAllMethods().Where(_ => _.HasBody && _.Body.HasInstructions)) {
 				if (m.IsStatic && m.Parameters.Count + 2 == m.Body.Instructions.Count) {
@@ -367,7 +376,7 @@ namespace de4dot.code {
 						if (isValidInlineTarget) {
 							inlineCandidate.Add(m.FullName, m);
 						}
-					}					
+					}
 				}
 			}
 			switch (options.StringDecrypterType) {
@@ -566,6 +575,7 @@ namespace de4dot.code {
 		}
 
 		public void DeobfuscateEnd() {
+			// Remove inlined proxy methods from their declaring types — they're dead code now
 			foreach (var m in inlineCandidate) {
 				m.Value.DeclaringType?.Remove(m.Value);
 			}
@@ -649,6 +659,9 @@ namespace de4dot.code {
 			if (!HasNonEmptyBody(method))
 				return;
 
+			// Inline proxy methods: replace Call <proxy> with the proxy's actual target instruction.
+			// Must copy BOTH OpCode and Operand — the proxy may use Callvirt or Newobj internally,
+			// and keeping the original Call opcode causes stack imbalance (OverflowException in dnSpy).
 			var rewritten = false;
 			for (var i = 0; i < method.Body.Instructions.Count; i++) {
 				var instr = method.Body.Instructions[i];

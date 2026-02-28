@@ -26,16 +26,29 @@ using dnlib.DotNet.Emit;
 using de4dot.blocks;
 
 namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
+	/// <summary>
+	/// Handles .NET Reactor v6.x generic string/constant decryption methods.
+	///
+	/// These are <Module> methods with signature !!0 Method&lt;T&gt;(int32), called as
+	/// Method&lt;string&gt;(193412188). The int32 argument is transformed via multiply-XOR
+	/// to produce an offset into a runtime-initialized byte[] from which the string
+	/// is read (4-byte LE length + UTF-8 data).
+	///
+	/// The byte[] field has HasFieldRVA=false (no static initial value in PE) — it's
+	/// populated by the .cctor at runtime via XorShift PRNG + block XOR decryption.
+	/// We extract it by dynamically loading the assembly (Assembly.Load) which triggers
+	/// the .cctor, then reading the field value via reflection.
+	/// </summary>
 	class GenericStringDecrypter {
 		ModuleDefMD module;
-		byte[] dataArray;
-		FieldDef dataField;
+		byte[] dataArray;         // runtime-initialized data extracted via dynamic loading
+		FieldDef dataField;       // the byte[] field on <Module> that holds encrypted data
 		List<DecrypterMethod> decrypterMethods = new List<DecrypterMethod>();
 
 		public class DecrypterMethod {
 			public MethodDef method;
-			public uint mulConstant;
-			public uint xorConstant;
+			public uint mulConstant;  // per-method multiply constant from IL pattern
+			public uint xorConstant;  // per-method XOR constant from IL pattern
 		}
 
 		public bool Detected => decrypterMethods.Count > 0;
@@ -44,18 +57,26 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 
 		public GenericStringDecrypter(ModuleDefMD module) => this.module = module;
 
+		/// <summary>
+		/// Scans all module types for generic constant decrypter methods matching
+		/// the signature: static !!0 Method&lt;T&gt;(int32) with GenericMVar return type.
+		/// Extracts the per-method MUL/XOR constants and the shared byte[] field.
+		/// </summary>
 		public void Find() {
 			foreach (var type in module.Types) {
 				foreach (var method in type.Methods) {
 					if (!method.IsStatic || !method.HasBody)
 						continue;
+					// Must be a generic method with exactly 1 type parameter
 					if (!method.HasGenericParameters || method.GenericParameters.Count != 1)
 						continue;
 					var sig = method.MethodSig;
 					if (sig == null || sig.Params.Count != 1)
 						continue;
+					// Single int32 argument
 					if (sig.Params[0].GetElementType() != ElementType.I4)
 						continue;
+					// Return type is the generic type parameter (!!0)
 					if (!(sig.RetType.RemovePinnedAndModifiers() is GenericMVar))
 						continue;
 
@@ -88,6 +109,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				Logger.w("Could not extract generic string decrypter data array");
 		}
 
+		/// <summary>
+		/// Loads the obfuscated assembly into the current process to trigger its .cctor,
+		/// which initializes the byte[] data field. Then reads the field via reflection.
+		/// Note: Module.ResolveType(0x02000001) throws for &lt;Module&gt;, so we use
+		/// Module.ResolveField() with the field's metadata token directly.
+		/// </summary>
 		byte[] TryDynamicExtract(byte[] fileData) {
 			try {
 				var asm = Assembly.Load(fileData);
@@ -126,6 +153,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return null;
 		}
 
+		/// <summary>
+		/// Extracts MUL and XOR constants from the method's IL pattern:
+		///   ldarg.0; ldc.i4 MUL; mul; ldc.i4 XOR; xor; starg
+		/// This pattern transforms the int32 argument in-place before using it as
+		/// an index into the data array. Also finds the byte[] field (ldsfld).
+		/// </summary>
 		bool TryExtractConstants(MethodDef method, out uint mul, out uint xor, out FieldDef byteArrayField) {
 			mul = 0;
 			xor = 0;
@@ -175,14 +208,19 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return false;
 		}
 
+		/// <summary>
+		/// Decrypts a constant given the method and its int32 argument.
+		/// Transform: (arg * MUL) ^ XOR → top 2 bits = type flag, bottom 30 bits * 4 = offset.
+		/// Type flag 3 = string (4-byte LE length + UTF-8 payload in dataArray).
+		/// </summary>
 		public string Decrypt(MethodDef method, int arg) {
 			var info = FindDecrypterMethod(method);
 			if (info == null || dataArray == null)
 				return null;
 
 			uint transformed = unchecked((uint)arg * info.mulConstant) ^ info.xorConstant;
-			int typeFlag = (int)(transformed >> 30);
-			int offset = (int)((transformed & 0x3FFFFFFFU) << 2);
+			int typeFlag = (int)(transformed >> 30);         // top 2 bits select type
+			int offset = (int)((transformed & 0x3FFFFFFFU) << 2);  // bottom 30 bits * 4 = byte offset
 
 			if (offset < 0 || offset >= dataArray.Length)
 				return null;

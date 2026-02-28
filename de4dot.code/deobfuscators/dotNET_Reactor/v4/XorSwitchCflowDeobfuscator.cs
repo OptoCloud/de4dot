@@ -79,15 +79,31 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return modified;
 		}
 
+		/// <summary>
+		/// Extracted constants and locals from a dispatch block.
+		///
+		/// Standard dispatch:  [ldloc state] ldc.i4 XOR_KEY; xor; [dup; stloc dispatch_var;] ldc.i4 MOD; rem.un; switch
+		/// Embedded-mul:       ldloc V; ldc.i4 MUL; mul; ldc.i4 XOR2; xor; ldc.i4 XOR_KEY; xor; [dup; stloc;] ldc.i4 MOD; rem.un; switch
+		///
+		/// For embedded-mul, XOR2 and XOR_KEY are folded into a single effective XorKey = XOR2 ^ XOR_KEY.
+		/// </summary>
 		struct DispatchInfo {
-			public Local DispatchVar;   // may be null if no dup+stloc
-			public Local StateVar;      // may be null if state arrives on stack (not from local)
-			public uint XorKey;
-			public uint Modulus;
-			public uint EmbeddedMul;    // multiply constant embedded in the dispatch block
-			public bool HasEmbeddedMul; // true if dispatch block contains multiply-XOR before dispatch
+			public Local DispatchVar;   // local stored via dup+stloc after XOR (null if absent)
+			public Local StateVar;      // local loaded at start of dispatch (null if state arrives on stack)
+			public uint XorKey;         // XOR key (or folded XOR2^XOR_KEY for embedded-mul)
+			public uint Modulus;        // switch case count (dispatch_val % Modulus)
+			public uint EmbeddedMul;    // multiply constant when dispatch has embedded mul-xor
+			public bool HasEmbeddedMul; // true when a multiply-XOR transition was merged into dispatch
 		}
 
+		/// <summary>
+		/// Scans backwards from the switch instruction to extract the dispatch pattern.
+		/// Recognizes three variants:
+		///   1. Stack-based: state pushed by predecessor, idx==0
+		///   2. Local-based: ldloc stateVar before XOR_KEY
+		///   3. Embedded multiply-XOR: ldloc V; mul; xor; before the XOR_KEY; xor;
+		///      (created when block merging folds a multiply-XOR transition into dispatch)
+		/// </summary>
 		bool TryExtractDispatchInfo(Block switchBlock, out DispatchInfo info) {
 			info = default;
 			var instrs = switchBlock.Instructions;
@@ -191,6 +207,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return switchBlock.Targets[caseIndex];
 		}
 
+		/// <summary>
+		/// Finds source blocks that push a constant state value and redirects them
+		/// directly to the target case block, bypassing the dispatch.
+		/// For each source: resolve state → compute case index → redirect branch.
+		/// Formula: case_idx = ((stateVal [* EmbeddedMul] ^ XorKey) % Modulus)
+		/// </summary>
 		bool RewriteConstantSources(Block switchBlock, DispatchInfo info) {
 			bool modified = false;
 
@@ -298,6 +320,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return caseToDispatchVals;
 		}
 
+		/// <summary>
+		/// Computes the dispatch value from a raw state constant and records it
+		/// in the case→dispatch_vals map. Multiple state constants can map to the
+		/// same case index (different dispatch_vals that give the same remainder).
+		/// </summary>
 		void AddDispatchVal(Dictionary<int, HashSet<uint>> caseToDispatchVals, DispatchInfo info, uint stateVal) {
 			uint dv;
 			if (info.HasEmbeddedMul)
@@ -310,6 +337,10 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			set.Add(dv);
 		}
 
+		/// <summary>
+		/// Checks if a block reaches the dispatch within maxHops fallthrough/branch steps.
+		/// Used to find entry-point blocks and indirect constant sources.
+		/// </summary>
 		bool BlockReachesDispatch(Block block, Block switchBlock, int maxHops) {
 			var current = block;
 			for (int i = 0; i < maxHops; i++) {
@@ -328,6 +359,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return false;
 		}
 
+		/// <summary>
+		/// BFS from each switch target to map every reachable block to its owning case index.
+		/// Blocks reachable from multiple cases are marked ambiguous and excluded.
+		/// Used by multiply-XOR rewriting to determine which case a source block belongs to.
+		/// </summary>
 		Dictionary<Block, int> BuildBlockToCase(Block switchBlock) {
 			var blockToCase = new Dictionary<Block, int>();
 			var ambiguousBlocks = new HashSet<Block>();
@@ -368,6 +404,13 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return blockToCase;
 		}
 
+		/// <summary>
+		/// Rewrites multiply-XOR transition blocks: ldloc dispatch_var; ldc.i4 MUL; mul; ldc.i4 XOR2; xor.
+		/// These compute next_state = (dispatch_val * MUL) ^ XOR2 where dispatch_val is from the
+		/// current case. We resolve the target by trying all known dispatch_vals for the owning case;
+		/// if they all produce the same target case, we can safely redirect.
+		/// Requires DispatchVar (the variable read by the multiply pattern).
+		/// </summary>
 		bool RewriteMultiplyXorSources(Block switchBlock, DispatchInfo info,
 			Dictionary<int, HashSet<uint>> caseToDispatchVals) {
 			if (info.DispatchVar == null)
@@ -424,6 +467,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return modified;
 		}
 
+		/// <summary>
+		/// Iterates to fixed-point discovering transitive dispatch values through multiply-XOR chains.
+		/// If case A has dispatch_val D and a multiply-XOR transition (D * MUL) ^ XOR2 = new_state,
+		/// then new_state ^ XorKey maps to a new case with a new dispatch_val. Repeat until no new
+		/// values are found (max 100 iterations to prevent infinite loops).
+		/// </summary>
 		void PropagateMultiplyXor(Block switchBlock, DispatchInfo info,
 			Dictionary<int, HashSet<uint>> caseToDispatchVals, Dictionary<Block, int> blockToCase) {
 
@@ -496,6 +545,14 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return -1;
 		}
 
+		/// <summary>
+		/// Searches a block for the multiply-XOR state transition pattern near its end.
+		/// Two variants:
+		///   A (stack-based): ldloc dispatch_var; ldc.i4 MUL; mul; ldc.i4 XOR2; xor
+		///   B (local-based): same + stloc state_var
+		/// Returns the MUL and XOR2 constants, and patternLen (number of trailing instrs to remove).
+		/// Scans backwards from the end to handle blocks with payload code before the transition.
+		/// </summary>
 		bool TryGetMultiplyXorPattern(Block block, DispatchInfo info,
 			out uint mulConst, out uint xor2Const, out int patternLen) {
 
