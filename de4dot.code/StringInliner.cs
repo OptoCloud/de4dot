@@ -26,6 +26,16 @@ using de4dot.blocks;
 
 namespace de4dot.code {
 	public abstract class StringInlinerBase : MethodReturnValueInliner {
+		protected static bool IsGenericStringInstantiation(MethodSpec gim) {
+			if (gim == null)
+				return false;
+			var gims = gim.GenericInstMethodSig;
+			if (gims == null || gims.GenericArguments.Count != 1)
+				return false;
+			var ga = gims.GenericArguments[0];
+			return ga != null && ga.ElementType == ElementType.String;
+		}
+
 		protected override void InlineReturnValues(IList<CallResult> callResults) {
 			foreach (var callResult in callResults) {
 				var block = callResult.block;
@@ -64,6 +74,8 @@ namespace de4dot.code {
 	public class DynamicStringInliner : StringInlinerBase {
 		IAssemblyClient assemblyClient;
 		Dictionary<int, int> methodTokenToId = new Dictionary<int, int>();
+		Dictionary<int, StringDecrypterMethodInfo> methodTokenToInfo = new Dictionary<int, StringDecrypterMethodInfo>();
+		Dictionary<int, StringDecrypterMethodInfo> methodIdToInfo = new Dictionary<int, StringDecrypterMethodInfo>();
 
 		class MyCallResult : CallResult {
 			public int methodId;
@@ -79,19 +91,46 @@ namespace de4dot.code {
 
 		public DynamicStringInliner(IAssemblyClient assemblyClient) => this.assemblyClient = assemblyClient;
 
-		public void Initialize(IEnumerable<int> methodTokens) {
+		public void Initialize(IEnumerable<StringDecrypterMethodInfo> methodInfos) {
 			methodTokenToId.Clear();
-			foreach (var methodToken in methodTokens) {
-				if (methodTokenToId.ContainsKey(methodToken))
+			methodTokenToInfo.Clear();
+			methodIdToInfo.Clear();
+			foreach (var info in methodInfos) {
+				if (methodTokenToId.ContainsKey(info.MethodToken))
 					continue;
-				methodTokenToId[methodToken] = assemblyClient.StringDecrypterService.DefineStringDecrypter(methodToken);
+				int methodId = assemblyClient.StringDecrypterService.DefineStringDecrypter(info.MethodToken);
+				methodTokenToId[info.MethodToken] = methodId;
+				methodTokenToInfo[info.MethodToken] = info;
+				methodIdToInfo[methodId] = info;
 			}
 		}
 
 		protected override CallResult CreateCallResult(IMethod method, MethodSpec gim, Block block, int callInstrIndex) {
-			if (!methodTokenToId.TryGetValue(method.MDToken.ToInt32(), out int methodId))
+			if (gim != null && !IsGenericStringInstantiation(gim))
+				return null;
+			if (!TryGetMethodId(method, out int methodId, out var methodInfo))
+				return null;
+			if (methodInfo != null && methodInfo.RequireGenericString && (gim == null || !IsGenericStringInstantiation(gim)))
 				return null;
 			return new MyCallResult(block, callInstrIndex, methodId, gim);
+		}
+
+		bool TryGetMethodId(IMethod method, out int methodId, out StringDecrypterMethodInfo methodInfo) {
+			methodId = 0;
+			methodInfo = null;
+			int methodToken = method.MDToken.ToInt32();
+			if (methodTokenToId.TryGetValue(methodToken, out methodId)) {
+				methodTokenToInfo.TryGetValue(methodToken, out methodInfo);
+				return true;
+			}
+			var resolved = (method as IMethodDefOrRef)?.ResolveMethodDef();
+			if (resolved == null)
+				return false;
+			methodToken = resolved.MDToken.ToInt32();
+			if (!methodTokenToId.TryGetValue(methodToken, out methodId))
+				return false;
+			methodTokenToInfo.TryGetValue(methodToken, out methodInfo);
+			return true;
 		}
 
 		protected override void InlineAllCalls() {
@@ -150,8 +189,18 @@ namespace de4dot.code {
 		}
 
 		protected override CallResult CreateCallResult(IMethod method, MethodSpec gim, Block block, int callInstrIndex) {
-			if (stringDecrypters.Find(method) == null)
+			if (gim != null && !IsGenericStringInstantiation(gim))
 				return null;
+			var handler = stringDecrypters.Find(method);
+			if (handler == null) {
+				var resolved = (method as IMethodDefOrRef)?.ResolveMethodDef();
+				if (resolved == null)
+					return null;
+				handler = stringDecrypters.Find(resolved);
+				if (handler == null)
+					return null;
+				method = resolved;
+			}
 			return new MyCallResult(block, callInstrIndex, method, gim);
 		}
 	}
