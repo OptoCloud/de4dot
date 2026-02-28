@@ -456,30 +456,33 @@ namespace de4dot.code {
 
 		void UpdateDynamicStringInliner() {
 			if (dynamicStringInliner != null)
-				dynamicStringInliner.Initialize(GetMethodTokens());
+				dynamicStringInliner.Initialize(GetMethodInfos());
 		}
 
-		IEnumerable<int> GetMethodTokens() {
-			if (!userStringDecrypterMethods)
-				return deob.GetStringDecrypterMethods();
+		IEnumerable<int> GetMethodTokens() => GetMethodInfos().Select(info => info.MethodToken);
 
-			var tokens = new List<int>();
+		IEnumerable<StringDecrypterMethodInfo> GetMethodInfos() {
+			if (!userStringDecrypterMethods)
+				return deob.GetStringDecrypterMethodInfos();
+
+			var infos = new List<StringDecrypterMethodInfo>();
 
 			foreach (var val in options.StringDecrypterMethods) {
 				var tokenStr = val.Trim();
 				if (Utils.StartsWith(tokenStr, "0x", StringComparison.OrdinalIgnoreCase))
 					tokenStr = tokenStr.Substring(2);
-				if (int.TryParse(tokenStr, NumberStyles.HexNumber, null, out int methodToken))
-					tokens.Add(methodToken);
-				else
-					tokens.AddRange(FindMethodTokens(val));
+				if (int.TryParse(tokenStr, NumberStyles.HexNumber, null, out int methodToken)) {
+					infos.Add(new StringDecrypterMethodInfo(methodToken, true));
+					continue;
+				}
+				infos.AddRange(FindMethodInfos(val));
 			}
 
-			return tokens;
+			return infos;
 		}
 
-		IEnumerable<int> FindMethodTokens(string methodDesc) {
-			var tokens = new List<int>();
+		IEnumerable<StringDecrypterMethodInfo> FindMethodInfos(string methodDesc) {
+			var infos = new List<StringDecrypterMethodInfo>();
 
 			SplitMethodDesc(methodDesc, out string typeString, out string methodName, out var argsStrings);
 
@@ -489,7 +492,8 @@ namespace de4dot.code {
 				foreach (var method in type.Methods) {
 					if (!method.IsStatic)
 						continue;
-					if (method.MethodSig.GetRetType().GetElementType() != ElementType.String && method.MethodSig.GetRetType().GetElementType() != ElementType.Object)
+					var ret = method.MethodSig.GetRetType();
+					if (ret.ElementType != ElementType.String && ret.ElementType != ElementType.Object)
 						continue;
 					if (methodName != null && methodName != method.Name)
 						continue;
@@ -509,11 +513,11 @@ namespace de4dot.code {
 					}
 
 					Logger.v("Adding string decrypter; token: {0:X8}, method: {1}", method.MDToken.ToInt32(), Utils.RemoveNewlines(method.FullName));
-					tokens.Add(method.MDToken.ToInt32());
+					infos.Add(new StringDecrypterMethodInfo(method.MDToken.ToInt32(), true));
 				}
 			}
 
-			return tokens;
+			return infos;
 		}
 
 		static void SplitMethodDesc(string methodDesc, out string type, out string name, out string[] args) {
@@ -563,7 +567,7 @@ namespace de4dot.code {
 
 		public void DeobfuscateEnd() {
 			foreach (var m in inlineCandidate) {
-				m.Value.DeclaringType.Remove(m.Value);
+				m.Value.DeclaringType?.Remove(m.Value);
 			}
 
 			DeobfuscateCleanUp();
