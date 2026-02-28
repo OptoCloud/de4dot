@@ -81,8 +81,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 
 		struct DispatchInfo {
 			public Local DispatchVar;   // may be null if no dup+stloc
+			public Local StateVar;      // may be null if state arrives on stack (not from local)
 			public uint XorKey;
 			public uint Modulus;
+			public uint EmbeddedMul;    // multiply constant embedded in the dispatch block
+			public bool HasEmbeddedMul; // true if dispatch block contains multiply-XOR before dispatch
 		}
 
 		bool TryExtractDispatchInfo(Block switchBlock, out DispatchInfo info) {
@@ -132,15 +135,50 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				return false;
 			uint xorKey = (uint)instrs[idx].GetLdcI4Value();
 
-			// Verify this is the start of the block (state arrives on stack)
-			// or preceded only by ldloc (state loaded from local)
-			if (idx > 0 && !(idx == 1 && instrs[0].IsLdloc()))
+			// Determine how the state value arrives:
+			// 1. idx == 0: state arrives on stack from predecessor block
+			// 2. instrs[idx-1] is ldloc: state loaded from a local variable
+			// 3. Multiply-XOR embedded in dispatch: ldloc V; ldc.i4 MUL; mul; ldc.i4 XOR2; xor; ldc.i4 XOR_KEY; xor; ...
+			//    In this case, we fold the two XOR constants: effective_XOR_KEY = XOR2 ^ XOR_KEY
+			// 4. Otherwise: reject
+			Local stateVar = null;
+			if (idx == 0) {
+				// State arrives on stack — original pattern
+			}
+			else if (idx >= 1 && instrs[idx - 1].IsLdloc()) {
+				stateVar = Instr.GetLocalVar(locals, instrs[idx - 1]);
+			}
+			else if (idx >= 5 && instrs[idx - 1].OpCode.Code == Code.Xor
+			         && instrs[idx - 2].IsLdcI4()
+			         && instrs[idx - 3].OpCode.Code == Code.Mul
+			         && instrs[idx - 4].IsLdcI4()
+			         && instrs[idx - 5].IsLdloc()) {
+				// Multiply-XOR embedded in dispatch block:
+				// ldloc V; ldc.i4 MUL; mul; ldc.i4 XOR2; xor; ldc.i4 XOR_KEY; xor; ...
+				// Fold: effective XOR_KEY = XOR2 ^ XOR_KEY
+				uint xor2 = (uint)instrs[idx - 2].GetLdcI4Value();
+				xorKey = unchecked(xor2 ^ xorKey);
+				stateVar = Instr.GetLocalVar(locals, instrs[idx - 5]);
+
+				info = new DispatchInfo {
+					DispatchVar = dispatchVar,
+					XorKey = xorKey,
+					Modulus = modulus,
+					StateVar = stateVar,
+					EmbeddedMul = (uint)instrs[idx - 4].GetLdcI4Value(),
+					HasEmbeddedMul = true,
+				};
+				return true;
+			}
+			else {
 				return false;
+			}
 
 			info = new DispatchInfo {
 				DispatchVar = dispatchVar,
 				XorKey = xorKey,
 				Modulus = modulus,
+				StateVar = stateVar,
 			};
 			return true;
 		}
@@ -164,12 +202,16 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				if (instrs.Count == 0)
 					continue;
 
-				int constIdx = FindStackTopConstant(instrs);
+				int constIdx = FindConstantForDispatch(instrs, info);
 				if (constIdx < 0)
 					continue;
 
 				uint stateVal = (uint)instrs[constIdx].GetLdcI4Value();
-				uint dispatchVal = unchecked(stateVal ^ info.XorKey);
+				uint dispatchVal;
+				if (info.HasEmbeddedMul)
+					dispatchVal = unchecked(stateVal * info.EmbeddedMul ^ info.XorKey);
+				else
+					dispatchVal = unchecked(stateVal ^ info.XorKey);
 				int caseIdx = (int)(dispatchVal % info.Modulus);
 
 				var targetBlock = GetCaseBlock(switchBlock, caseIdx);
@@ -188,11 +230,37 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		}
 
 		/// <summary>
+		/// Finds a constant that feeds the dispatch, handling both stack-based and
+		/// local-variable-based state patterns.
+		/// </summary>
+		int FindConstantForDispatch(List<Instr> instrs, DispatchInfo info) {
+			if (info.StateVar != null)
+				return FindLocalStoreConstant(instrs, info.StateVar);
+			return FindStackTopConstant(instrs);
+		}
+
+		/// <summary>
+		/// Find a ldc.i4 + stloc pattern where the value is stored to the given local.
+		/// Returns the index of the ldc.i4 instruction, or -1 if not found.
+		/// </summary>
+		int FindLocalStoreConstant(List<Instr> instrs, Local stateVar) {
+			for (int i = instrs.Count - 1; i >= 1; i--) {
+				if (!instrs[i].IsStloc())
+					continue;
+				var local = Instr.GetLocalVar(locals, instrs[i]);
+				if (local != stateVar)
+					continue;
+				if (instrs[i - 1].IsLdcI4())
+					return i - 1;
+			}
+			return -1;
+		}
+
+		/// <summary>
 		/// Collect dispatch vals from multiple sources:
 		/// 1. Direct constant sources of the dispatch block
 		/// 2. Constants in blocks reachable from case blocks that flow to dispatch
-		/// 3. Constants in all blocks that have a path to the dispatch
-		/// 4. Propagation through multiply-XOR chains
+		/// 3. Propagation through multiply-XOR chains
 		/// </summary>
 		Dictionary<int, HashSet<uint>> CollectAllDispatchVals(Block switchBlock, DispatchInfo info) {
 			var caseToDispatchVals = new Dictionary<int, HashSet<uint>>();
@@ -201,23 +269,20 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			foreach (var source in switchBlock.Sources) {
 				if (source == switchBlock)
 					continue;
-				int constIdx = FindStackTopConstant(source.Instructions);
+				int constIdx = FindConstantForDispatch(source.Instructions, info);
 				if (constIdx < 0)
 					continue;
 				uint stateVal = (uint)source.Instructions[constIdx].GetLdcI4Value();
 				AddDispatchVal(caseToDispatchVals, info, stateVal);
 			}
 
-			// 2. Search ALL blocks for constants that flow toward the dispatch.
-			// This catches entry points and blocks that reach the dispatch
-			// through intermediate blocks.
+			// 2. Search ALL blocks for constants that flow toward the dispatch
 			foreach (var block in allBlocks) {
 				if (block == switchBlock)
 					continue;
-				// Check if this block (or a nearby successor) leads to the dispatch
 				if (!BlockReachesDispatch(block, switchBlock, 3))
 					continue;
-				int ci = FindStackTopConstant(block.Instructions);
+				int ci = FindConstantForDispatch(block.Instructions, info);
 				if (ci >= 0) {
 					uint sv = (uint)block.Instructions[ci].GetLdcI4Value();
 					AddDispatchVal(caseToDispatchVals, info, sv);
@@ -234,7 +299,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		}
 
 		void AddDispatchVal(Dictionary<int, HashSet<uint>> caseToDispatchVals, DispatchInfo info, uint stateVal) {
-			uint dv = unchecked(stateVal ^ info.XorKey);
+			uint dv;
+			if (info.HasEmbeddedMul)
+				dv = unchecked(stateVal * info.EmbeddedMul ^ info.XorKey);
+			else
+				dv = unchecked(stateVal ^ info.XorKey);
 			int ci = (int)(dv % info.Modulus);
 			if (!caseToDispatchVals.TryGetValue(ci, out var set))
 				caseToDispatchVals[ci] = set = new HashSet<uint>();
@@ -246,14 +315,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			for (int i = 0; i < maxHops; i++) {
 				if (current.FallThrough == switchBlock)
 					return true;
-				// Check if any target branches to the switch
 				if (current.Targets != null) {
 					foreach (var t in current.Targets) {
 						if (t == switchBlock)
 							return true;
 					}
 				}
-				// Follow fallthrough chain
 				if (current.FallThrough == null || current.FallThrough == current)
 					break;
 				current = current.FallThrough;
@@ -319,7 +386,6 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				if (!TryGetMultiplyXorPattern(source, info, out uint mulConst, out uint xor2Const, out int patternLen))
 					continue;
 
-				// Which case does this block belong to?
 				if (!blockToCase.TryGetValue(source, out int ownerCase))
 					continue;
 
@@ -354,7 +420,6 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				source.ReplaceLastInstrsWithBranch(patternLen, targetBlock);
 				modified = true;
 			}
-
 
 			return modified;
 		}
@@ -425,7 +490,6 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			}
 
 			// Case 3: last instruction is stloc, preceded by ldc.i4
-			// The value was stored to a local; dispatch will ldloc it
 			if (lastIdx >= 1 && instrs[lastIdx].IsStloc() && instrs[lastIdx - 1].IsLdcI4())
 				return lastIdx - 1;
 
@@ -440,37 +504,39 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			patternLen = 0;
 			var instrs = block.Instructions;
 
-			// Pattern: ldloc dispatch_var; ldc.i4 MUL; mul; ldc.i4 XOR2; xor
+			// Pattern A (stack-based): ldloc dispatch_var; ldc.i4 MUL; mul; ldc.i4 XOR2; xor
+			// Pattern B (local-based): ldloc dispatch_var; ldc.i4 MUL; mul; ldc.i4 XOR2; xor; stloc state_var
 			if (instrs.Count < 5)
 				return false;
 
-			// Find the pattern ending at or near the end of the block
 			for (int end = instrs.Count - 1; end >= 4; end--) {
 				int i = end;
 
-				// The xor at the end of the multiply-XOR computation
+				// Optional trailing stloc state_var (local-based pattern)
+				if (info.StateVar != null && instrs[i].IsStloc()) {
+					var storeVar = Instr.GetLocalVar(locals, instrs[i]);
+					if (storeVar == info.StateVar)
+						i--;
+				}
+
 				if (instrs[i].OpCode.Code != Code.Xor)
 					continue;
 				i--;
 
-				// ldc.i4 XOR2
 				if (!instrs[i].IsLdcI4())
 					continue;
 				xor2Const = (uint)instrs[i].GetLdcI4Value();
 				i--;
 
-				// mul
 				if (instrs[i].OpCode.Code != Code.Mul)
 					continue;
 				i--;
 
-				// ldc.i4 MUL
 				if (!instrs[i].IsLdcI4())
 					continue;
 				mulConst = (uint)instrs[i].GetLdcI4Value();
 				i--;
 
-				// ldloc dispatch_var
 				if (!instrs[i].IsLdloc())
 					continue;
 				var loadedVar = Instr.GetLocalVar(locals, instrs[i]);

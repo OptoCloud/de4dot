@@ -656,13 +656,15 @@ namespace de4dot.code {
 					var targetMethod = (IMethod?)instr.Operand;
 					if (targetMethod is null) continue;
 					if (inlineCandidate.TryGetValue(targetMethod.ResolveMethodDef()?.FullName ?? targetMethod.FullName, out var methodToInline)) {
-						instr.Operand = methodToInline.Body.Instructions[methodToInline.Parameters.Count].Operand;
+						var targetInstr = methodToInline.Body.Instructions[methodToInline.Parameters.Count];
+						instr.OpCode = targetInstr.OpCode;
+						instr.Operand = targetInstr.Operand;
 						rewritten = true;
 					}
 				}
 			}
 
-			if (rewritten) {	
+			if (rewritten) {
 				method.Body.KeepOldMaxStack = true;
 			}
 
