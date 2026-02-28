@@ -98,6 +98,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		byte[] fileData;
 		MethodsDecrypter methodsDecrypter;
 		StringDecrypter stringDecrypter;
+		GenericStringDecrypter genericStringDecrypter;
 		BooleanDecrypter booleanDecrypter;
 		BooleanValueInliner booleanValueInliner;
 		MetadataTokenObfuscator metadataTokenObfuscator;
@@ -225,6 +226,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			proxyCallFixer.FindDelegateCreator(module);
 			stringDecrypter = new StringDecrypter(module);
 			stringDecrypter.Find(DeobfuscatedFile);
+			genericStringDecrypter = new GenericStringDecrypter(module);
+			genericStringDecrypter.Find();
 			booleanDecrypter = new BooleanDecrypter(module);
 			booleanDecrypter.Find();
 			assemblyResolver = new AssemblyResolver(module);
@@ -432,6 +435,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			newOne.methodsDecrypter = new MethodsDecrypter(module, methodsDecrypter);
 			newOne.proxyCallFixer = new ProxyCallFixer(module, proxyCallFixer);
 			newOne.stringDecrypter = new StringDecrypter(module, stringDecrypter);
+			newOne.genericStringDecrypter = new GenericStringDecrypter(module);
+			newOne.genericStringDecrypter.Find();
 			newOne.booleanDecrypter = new BooleanDecrypter(module, booleanDecrypter);
 			newOne.assemblyResolver = new AssemblyResolver(module, assemblyResolver);
 			newOne.resourceResolver = new ResourceResolver(module, resourceResolver);
@@ -511,6 +516,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			proxyCallFixer.Find();
 			proxyCallFixer.DeobfuscateAll();
 
+			// Initialize generic string decrypter - uses dynamic assembly loading
+			// to extract the byte array that the .cctor initializes at runtime.
+			if (genericStringDecrypter.Detected)
+				genericStringDecrypter.Initialize(fileData ?? DeobUtils.ReadModule(module));
+
 			var cflowInliner = new CflowConstantsInliner(module, DeobfuscatedFile);
 			cflowInliner.InlineAllConstants();
 			AddTypeToBeRemoved(cflowInliner.Type, "Cflow constants type");
@@ -539,6 +549,13 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				if (stringDecrypter.OtherStringDecrypter != null) {
 					staticStringInliner.Add(stringDecrypter.OtherStringDecrypter, (method2, gim, args) => {
 						return stringDecrypter.Decrypt((string)args[0]);
+					});
+				}
+			}
+			if (genericStringDecrypter.Initialized) {
+				foreach (var dm in genericStringDecrypter.DecrypterMethods) {
+					staticStringInliner.Add(dm.method, (method2, gim, args) => {
+						return genericStringDecrypter.Decrypt(method2, (int)args[0]);
 					});
 				}
 			}
@@ -719,6 +736,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				list.Add(info.method.MDToken.ToInt32());
 			if (stringDecrypter.OtherStringDecrypter != null)
 				list.Add(stringDecrypter.OtherStringDecrypter.MDToken.ToInt32());
+			foreach (var dm in genericStringDecrypter.DecrypterMethods)
+				list.Add(dm.method.MDToken.ToInt32());
 			return list;
 		}
 
