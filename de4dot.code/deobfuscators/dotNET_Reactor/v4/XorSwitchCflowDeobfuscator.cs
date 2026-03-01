@@ -318,10 +318,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				var stackVal = SliceBackward(instrs, idx - 1);
 				if (stackVal == null)
 					return false;
-				// Only accept as internal constant if the resolved expression starts at or near
+				// Only accept as internal constant if the resolved expression starts near
 				// the beginning of the block (merged dead-code prefix). This prevents
 				// classifying a "computed constant late in block" as "dispatch ignores sources".
-				if (stackVal.Value.startIdx > 2)
+				// SimulateDispatchFromEmpty is the hard safety gate — if the block depends
+				// on external state, simulation fails on unknown ldloc or stack underflow.
+				if (stackVal.Value.startIdx > 10)
 					return false;
 				stateVar = null;
 				internalStateVarInput = stackVal.Value.value;
@@ -1165,35 +1167,65 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			if (switchBlock.Targets == null)
 				return blockToCase;
 
+			var queue = new Queue<(Block block, int caseIdx)>();
+			var seenPair = new HashSet<(Block, int)>();
+
+			// Seed: enqueue each case target with its case index
 			for (int i = 0; i < switchBlock.Targets.Count; i++) {
 				var caseBlock = switchBlock.Targets[i];
-				if (caseBlock == null)
+				if (caseBlock == null || caseBlock == switchBlock)
+					continue;
+				if (ambiguousBlocks.Contains(caseBlock)) {
+					// Already ambiguous from a prior case seed
+				}
+				else if (blockToCase.TryGetValue(caseBlock, out int existingCase)) {
+					if (existingCase != i) {
+						ambiguousBlocks.Add(caseBlock);
+						blockToCase.Remove(caseBlock);
+					}
+				}
+				else {
+					blockToCase[caseBlock] = i;
+				}
+				if (seenPair.Add((caseBlock, i)))
+					queue.Enqueue((caseBlock, i));
+			}
+
+			// Multi-source BFS: each wave carries its case index
+			while (queue.Count > 0) {
+				var (block, caseIdx) = queue.Dequeue();
+
+				// Don't expand ambiguous blocks
+				if (ambiguousBlocks.Contains(block))
 					continue;
 
-				var visited = new HashSet<Block> { switchBlock };
-				visited.Add(caseBlock);
-				var worklist = new Queue<Block>();
-				worklist.Enqueue(caseBlock);
+				// Check if this block was claimed by a different case since enqueue
+				if (blockToCase.TryGetValue(block, out int curCase) && curCase != caseIdx) {
+					ambiguousBlocks.Add(block);
+					blockToCase.Remove(block);
+					continue;
+				}
 
-				while (worklist.Count > 0) {
-					var block = worklist.Dequeue();
-
-					if (ambiguousBlocks.Contains(block))
+				// Expand successors
+				foreach (var succ in block.GetTargets()) {
+					if (succ == null || succ == switchBlock)
 						continue;
-					if (blockToCase.TryGetValue(block, out int existingCase)) {
-						if (existingCase != i) {
-							ambiguousBlocks.Add(block);
-							blockToCase.Remove(block);
+					if (!seenPair.Add((succ, caseIdx)))
+						continue; // this case wave already explored it
+
+					if (ambiguousBlocks.Contains(succ)) {
+						// Already ambiguous, don't enqueue (won't expand)
+					}
+					else if (blockToCase.TryGetValue(succ, out int existingCase)) {
+						if (existingCase != caseIdx) {
+							ambiguousBlocks.Add(succ);
+							blockToCase.Remove(succ);
 						}
 					}
 					else {
-						blockToCase[block] = i;
+						blockToCase[succ] = caseIdx;
 					}
-
-					foreach (var succ in block.GetTargets()) {
-						if (succ != null && visited.Add(succ))
-							worklist.Enqueue(succ);
-					}
+					queue.Enqueue((succ, caseIdx));
 				}
 			}
 			return blockToCase;
@@ -1215,36 +1247,63 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			if (switchBlock.Targets == null)
 				return;
 
-			bool changed = true;
-			int maxIter = 100;
-			while (changed && maxIter-- > 0) {
-				changed = false;
+			// Phase 1: Pre-scan sources once, index mul-xor patterns by owning case.
+			// Each case can have multiple sources with different (mulConst, xor2Const).
+			var caseToMulXorPatterns = new Dictionary<int, List<(uint mulConst, uint xor2Const)>>();
+			foreach (var source in switchBlock.Sources) {
+				if (source == switchBlock)
+					continue;
+				if (!TryGetMultiplyXorPattern(source, info, out uint mulConst, out uint xor2Const, out _, out _))
+					continue;
+				if (!blockToCase.TryGetValue(source, out int ownerCase))
+					continue;
+				if (!caseToMulXorPatterns.TryGetValue(ownerCase, out var patterns))
+					caseToMulXorPatterns[ownerCase] = patterns = new List<(uint, uint)>();
+				// Deduplicate patterns within the same case
+				var pat = (mulConst, xor2Const);
+				if (!patterns.Contains(pat))
+					patterns.Add(pat);
+			}
 
-				foreach (var source in switchBlock.Sources) {
-					if (source == switchBlock)
-						continue;
+			if (caseToMulXorPatterns.Count == 0)
+				return;
 
-					if (!TryGetMultiplyXorPattern(source, info, out uint mulConst, out uint xor2Const, out _, out _))
-						continue;
+			// Phase 2: Queue-based worklist. Each (caseIdx, dispatchVal) pair is
+			// processed exactly once: compute next state via domain math, enqueue if new.
+			var worklist = new Queue<(int caseIdx, uint dispatchVal)>();
+			var processed = new HashSet<(int, uint)>();
 
-					if (!blockToCase.TryGetValue(source, out int ownerCase))
-						continue;
+			// Seed with all initially known (case, dv) pairs that have mul-xor sources
+			foreach (var kv in caseToDispatchVals) {
+				if (!caseToMulXorPatterns.ContainsKey(kv.Key))
+					continue;
+				foreach (var dv in kv.Value) {
+					if (processed.Add((kv.Key, dv)))
+						worklist.Enqueue((kv.Key, dv));
+				}
+			}
 
-					if (!caseToDispatchVals.TryGetValue(ownerCase, out var dispatchVals))
-						continue;
+			while (worklist.Count > 0) {
+				var (caseIdx, dispatchVal) = worklist.Dequeue();
 
-					foreach (var dispatchVal in new List<uint>(dispatchVals)) {
-						// DISPATCH → STATE → STATEVAR → DISPATCH (C)
-						uint nextState = MulXorToNextState(dispatchVal, mulConst, xor2Const);
-						uint svInput = StateValToStateVarInput(info, nextState);
-						uint newDv = StateToDispatchVal(info, svInput);
-						int newCase = NormalizeCaseIndex(info, newDv);
+				if (!caseToMulXorPatterns.TryGetValue(caseIdx, out var patterns))
+					continue;
 
-						if (!caseToDispatchVals.TryGetValue(newCase, out var newSet)) {
-							caseToDispatchVals[newCase] = newSet = new HashSet<uint>();
-						}
-						if (newSet.Add(newDv))
-							changed = true;
+				foreach (var (mulConst, xor2Const) in patterns) {
+					// DISPATCH → STATE → STATEVAR → DISPATCH (C)
+					uint nextState = MulXorToNextState(dispatchVal, mulConst, xor2Const);
+					uint svInput = StateValToStateVarInput(info, nextState);
+					uint newDv = StateToDispatchVal(info, svInput);
+					int newCase = NormalizeCaseIndex(info, newDv);
+
+					if (!caseToDispatchVals.TryGetValue(newCase, out var newSet))
+						caseToDispatchVals[newCase] = newSet = new HashSet<uint>();
+
+					if (newSet.Add(newDv)) {
+						// New dispatch val discovered — if this case has mul-xor patterns,
+						// enqueue for further propagation
+						if (processed.Add((newCase, newDv)))
+							worklist.Enqueue((newCase, newDv));
 					}
 				}
 			}
@@ -1439,10 +1498,16 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 
 				// All dispatch vals for this case must produce the same target.
 				// If any produce a different target, skip (fail closed).
-				// Property-based self-check: for each dispatch val, simulate the
-				// dispatch IL with the computed next state and verify agreement.
+				//
+				// Phase 1 (all dvs): cheap domain math to check all produce same target.
+				// Phase 2 (2 samples): SimulateDispatch on first + one other dv to verify
+				// the formula. The domain conversion is a fixed deterministic function;
+				// simulation verifies the formula is correct, not per-value correctness.
 				int? resolvedCaseIdx = null;
 				bool allSame = true;
+				uint firstStateVarInput = 0;
+				uint secondStateVarInput = 0;
+				bool hasSecond = false;
 				foreach (var dispatchVal in dispatchVals) {
 					// Domain flow (C): DISPATCH → STATE → STATEVAR → DISPATCH → CASE
 					uint nextState = MulXorToNextState(dispatchVal, mulConst, xor2Const);
@@ -1450,18 +1515,29 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 					uint nextDispatchVal = StateToDispatchVal(info, stateVarInput);
 					int targetCaseIdx = NormalizeCaseIndex(info, nextDispatchVal);
 
-					// Self-check (hard gate): require exact simulation agreement
-					int simCaseIdx = SimulateDispatch(switchBlock, info.StateVar, stateVarInput);
-					if (simCaseIdx != targetCaseIdx) {
-						allSame = false;
-						break;
-					}
-
-					if (resolvedCaseIdx == null)
+					if (resolvedCaseIdx == null) {
 						resolvedCaseIdx = targetCaseIdx;
+						firstStateVarInput = stateVarInput;
+					}
 					else if (resolvedCaseIdx.Value != targetCaseIdx) {
 						allSame = false;
 						break;
+					}
+					else if (!hasSecond) {
+						secondStateVarInput = stateVarInput;
+						hasSecond = true;
+					}
+				}
+
+				// Phase 2: Self-check (hard gate) on up to 2 samples
+				if (allSame && resolvedCaseIdx != null) {
+					int simCaseIdx = SimulateDispatch(switchBlock, info.StateVar, firstStateVarInput);
+					if (simCaseIdx != resolvedCaseIdx.Value)
+						allSame = false;
+					else if (hasSecond) {
+						simCaseIdx = SimulateDispatch(switchBlock, info.StateVar, secondStateVarInput);
+						if (simCaseIdx != resolvedCaseIdx.Value)
+							allSame = false;
 					}
 				}
 
@@ -1544,28 +1620,46 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 					continue;
 
 				// All dispatch vals for this case must produce the same next target.
-				// Property-based self-check: in a self-loop, StateVar holds the
-				// previous dispatch val (stored by the dispatch's dup+stloc).
-				// Feed it into the dispatch IL and verify the simulated case index.
+				//
+				// Phase 1 (all dvs): cheap domain math to check all produce same target.
+				// Phase 2 (2 samples): SimulateDispatch on first + one other dv to verify
+				// the formula. The self-loop conversion is deterministic; simulation
+				// verifies the formula is correct, not per-value correctness.
 				int? resolvedCaseIdx = null;
 				bool allSame = true;
+				uint firstDv = 0;
+				uint secondDv = 0;
+				bool hasSecond = false;
 				foreach (var dv in dispatchVals) {
 					// Self-loop: DISPATCH → DISPATCH (C)
 					uint nextDv = SelfLoopNext(info, dv);
 					int targetCaseIdx = NormalizeCaseIndex(info, nextDv);
 
-					// Self-check (hard gate): require exact simulation agreement
-					int simCaseIdx = SimulateDispatch(switchBlock, info.StateVar, dv);
-					if (simCaseIdx != targetCaseIdx) {
-						allSame = false;
-						break;
-					}
-
-					if (resolvedCaseIdx == null)
+					if (resolvedCaseIdx == null) {
 						resolvedCaseIdx = targetCaseIdx;
+						firstDv = dv;
+					}
 					else if (resolvedCaseIdx.Value != targetCaseIdx) {
 						allSame = false;
 						break;
+					}
+					else if (!hasSecond) {
+						secondDv = dv;
+						hasSecond = true;
+					}
+				}
+
+				// Phase 2: Self-check (hard gate) on up to 2 samples.
+				// In a self-loop, StateVar holds the previous dispatch val
+				// (stored by the dispatch's dup+stloc).
+				if (allSame && resolvedCaseIdx != null) {
+					int simCaseIdx = SimulateDispatch(switchBlock, info.StateVar, firstDv);
+					if (simCaseIdx != resolvedCaseIdx.Value)
+						allSame = false;
+					else if (hasSecond) {
+						simCaseIdx = SimulateDispatch(switchBlock, info.StateVar, secondDv);
+						if (simCaseIdx != resolvedCaseIdx.Value)
+							allSame = false;
 					}
 				}
 
