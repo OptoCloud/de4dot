@@ -129,12 +129,29 @@ static class Rebuilder {
 			if (target == null)
 				continue;
 
+			// Don't rewrite across exception handler scope boundaries
+			if (block.Parent != target.Parent)
+				continue;
+
 			// Compute exact pop count at the cut point
 			int popCount = slice.StackDepthAtCut;
 			int numToRemove = block.Instructions.Count - slice.PayloadEnd;
 
 			if (numToRemove < 0 || numToRemove > block.Instructions.Count)
 				continue;
+
+			// If the block has a conditional/switch branch (Targets != null),
+			// the rewrite must remove the branch instruction itself. Otherwise
+			// ReplaceLastInstrsWithBranch disconnects Targets (setting it null)
+			// but leaves the branch instruction with a stale operand, causing
+			// "removed instruction" errors when dnlib writes the method body.
+			if (block.Targets != null && block.Targets.Count > 0) {
+				if (numToRemove == 0)
+					continue;
+				// Ensure the branch instruction (always last) is within the removal range
+				if (slice.PayloadEnd >= block.Instructions.Count)
+					continue;
+			}
 
 			// Skip no-op rewrites (block already branches to target with nothing to change).
 			// Prevents infinite cycling when already-rewritten blocks get re-sliced as

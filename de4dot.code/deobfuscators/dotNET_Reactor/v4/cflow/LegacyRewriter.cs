@@ -45,13 +45,19 @@ class LegacyRewriter {
 	///     Centralized CFG mutation. Calls ReplaceLastInstrsWithBranch on the source
 	///     block, optionally inserting pop;pop for cross-block XOR2 stack cleanup.
 	/// </summary>
-	internal static void ApplyCandidate(RewriteCandidate candidate) {
+	internal static bool ApplyCandidate(RewriteCandidate candidate) {
+		// Don't rewrite across exception handler scope boundaries — the resulting
+		// branch would reference an instruction from a different scope, causing
+		// "Found some other method's instruction or a removed instruction" errors.
+		if (candidate.SourceBlock.Parent != candidate.TargetBlock.Parent)
+			return false;
 		candidate.SourceBlock.ReplaceLastInstrsWithBranch(
 			candidate.InstructionsToRemove, candidate.TargetBlock);
 		if (candidate.NeedStackCleanup) {
 			candidate.SourceBlock.Add(new Instr(OpCodes.Pop.ToInstruction()));
 			candidate.SourceBlock.Add(new Instr(OpCodes.Pop.ToInstruction()));
 		}
+		return true;
 	}
 
 	/// <summary>

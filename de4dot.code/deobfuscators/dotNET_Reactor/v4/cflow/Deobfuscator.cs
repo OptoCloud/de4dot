@@ -102,10 +102,8 @@ class Deobfuscator : IBlocksDeobfuscator {
 		// Internal constant dispatch shortcut (handled before either pipeline)
 		if (info.InternalStateVarInput.HasValue) {
 			var candidate = rewriter.TryBuildInternalConstantCandidate(switchBlock, info);
-			if (candidate != null) {
-				LegacyRewriter.ApplyCandidate(candidate.Value);
+			if (candidate != null && LegacyRewriter.ApplyCandidate(candidate.Value))
 				return true;
-			}
 		}
 
 		// Precompute shared structures (used by both pipelines)
@@ -177,10 +175,8 @@ class Deobfuscator : IBlocksDeobfuscator {
 			if (source == switchBlock)
 				continue;
 			var candidate = rewriter.TryBuildConstantSourceCandidate(switchBlock, info, source);
-			if (candidate != null) {
-				LegacyRewriter.ApplyCandidate(candidate.Value);
-				modified = true;
-			}
+			if (candidate != null)
+				modified |= LegacyRewriter.ApplyCandidate(candidate.Value);
 		}
 
 		foreach (var source in new List<Block>(switchBlock.Sources)) {
@@ -192,10 +188,8 @@ class Deobfuscator : IBlocksDeobfuscator {
 				if (pred == switchBlock || pred == source)
 					continue;
 				var candidate = rewriter.TryBuildPopThroughCandidate(switchBlock, info, pred);
-				if (candidate != null) {
-					LegacyRewriter.ApplyCandidate(candidate.Value);
-					modified = true;
-				}
+				if (candidate != null)
+					modified |= LegacyRewriter.ApplyCandidate(candidate.Value);
 			}
 		}
 
@@ -220,10 +214,8 @@ class Deobfuscator : IBlocksDeobfuscator {
 				continue;
 			var candidate = rewriter.TryBuildMulXorCandidate(switchBlock, info, source,
 				caseToDispatchVals, blockToCase);
-			if (candidate != null) {
-				LegacyRewriter.ApplyCandidate(candidate.Value);
-				modified = true;
-			}
+			if (candidate != null)
+				modified |= LegacyRewriter.ApplyCandidate(candidate.Value);
 		}
 
 		return modified;
@@ -255,12 +247,11 @@ class Deobfuscator : IBlocksDeobfuscator {
 		foreach (var source in new List<Block>(sourcesToProcess)) {
 			var candidate = rewriter.TryBuildSelfLoopCandidate(switchBlock, info, source,
 				caseToDispatchVals, blockToCase);
-			if (candidate != null) {
-				LegacyRewriter.ApplyCandidate(candidate.Value);
-				modified = true;
-			}
+			if (candidate != null)
+				modified |= LegacyRewriter.ApplyCandidate(candidate.Value);
 		}
 
 		return modified;
 	}
+
 }
