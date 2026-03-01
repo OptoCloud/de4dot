@@ -141,7 +141,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				var list = new List<IBlocksDeobfuscator>();
 				if (CanInlineMethods) {
 					list.Add(new DotNetReactorCflowDeobfuscator());
-					list.Add(new XorSwitchCflowDeobfuscator());
+					list.Add(new cflow.Deobfuscator());
 					list.Add(new MethodCallInliner(false));
 				}
 				return list;
