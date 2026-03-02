@@ -130,7 +130,7 @@ class Deobfuscator : IBlocksDeobfuscator {
 			lmNoop += LoopMachineRewriter.SkipNoop;
 		}
 
-		if (totalDispatches > 0 || residualSwitches > 0) {
+		if (totalDispatches > 0) {
 			string failInfo = "";
 			foreach (var kv in npFailCounts)
 				failInfo += $" {kv.Key}={kv.Value}";
@@ -174,10 +174,6 @@ class Deobfuscator : IBlocksDeobfuscator {
 			return instrs[si].IsLdcI4();
 		}
 		return true;
-	}
-
-	bool TryDeobfuscateDispatch(Block switchBlock, out bool usedNewPipeline) {
-		return TryDeobfuscateDispatch(switchBlock, out usedNewPipeline, out _);
 	}
 
 	bool TryDeobfuscateDispatch(Block switchBlock, out bool usedNewPipeline, out string failStage) {
@@ -242,8 +238,8 @@ class Deobfuscator : IBlocksDeobfuscator {
 		// Loop-machine path: targeted constant-transition shortcut for split-embedded-mul
 		// dispatchers where case blocks write constants to StateVar (no OriginalStateVar).
 		if (info.SplitEmbeddedMul && info.OriginalStateVar == null && info.StateVar != null) {
-			if (LoopMachineRewriter.TryRewrite(model, caseToDispatchVals, blockToCase,
-					patternMatcher, constantDiscovery, simulator, locals)) {
+			if (LoopMachineRewriter.TryRewrite(model, blockToCase,
+					patternMatcher, constantDiscovery, locals)) {
 				modified = true;
 			}
 		}
@@ -266,12 +262,6 @@ class Deobfuscator : IBlocksDeobfuscator {
 			failStage = null;
 
 		return modified;
-	}
-
-	bool TryNewPipeline(DispatchModel model,
-		Dictionary<int, HashSet<uint>> caseToDispatchVals,
-		Dictionary<Block, int> blockToCase) {
-		return TryNewPipeline(model, caseToDispatchVals, blockToCase, out _);
 	}
 
 	bool TryNewPipeline(DispatchModel model,

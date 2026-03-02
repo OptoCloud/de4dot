@@ -78,7 +78,7 @@ static class StateTracer {
 					uint dv = DomainMath.StateToDispatchVal(info, svInput);
 					int targetCase = DomainMath.NormalizeCaseIndex(info, dv);
 
-					// Track StateVar value for the new dispatch val
+					// Track STATEVAR-domain value for the new dispatch val
 					if (dvToSv != null)
 						dvToSv[(targetCase, dv)] = svInput;
 

@@ -437,11 +437,10 @@ class ConstantDiscovery {
 
 	/// <summary>
 	///     Fixed-point propagation through multiply-XOR chains.
-	///     Capped at maxTotalVals total dispatch vals to prevent unbounded growth
-	///     when the mul-xor orbit is long (can be up to 2^32 for pathological constants).
-	///     For non-DispatchVal domain transitions, propagation tracks StateVar values
-	///     alongside dispatch values to avoid requiring a modular inverse of EmbeddedMul
-	///     (which doesn't exist when EmbeddedMul is even).
+	///     Capped at maxIterations to prevent unbounded growth when the mul-xor
+	///     orbit is long. For non-DispatchVal domain transitions (StateVar or
+	///     OriginalState), tracks StateVar values alongside dispatch values to
+	///     avoid requiring a modular inverse of EmbeddedMul.
 	/// </summary>
 	internal void PropagateMultiplyXor(Block switchBlock, DispatchInfo info,
 		Dictionary<int, HashSet<uint>> caseToDispatchVals, Dictionary<Block, int> blockToCase,
@@ -485,19 +484,12 @@ class ConstantDiscovery {
 		if (caseToMulXorPatterns.Count == 0)
 			return;
 
-		int nonDispatchDomainPatterns = 0;
-		foreach (var patterns in caseToMulXorPatterns.Values)
-			foreach (var pat in patterns)
-				if (pat.domain != MulXorInputDomain.DispatchVal) nonDispatchDomainPatterns++;
-
 		var worklist = new Queue<(int caseIdx, uint dispatchVal)>();
 		var processed = new HashSet<(int, uint)>();
 
-		int seedMatches = 0;
 		foreach (var kv in caseToDispatchVals) {
 			if (!caseToMulXorPatterns.ContainsKey(kv.Key))
 				continue;
-			seedMatches++;
 			foreach (uint dv in kv.Value) {
 				if (processed.Add((kv.Key, dv)))
 					worklist.Enqueue((kv.Key, dv));
@@ -506,7 +498,6 @@ class ConstantDiscovery {
 
 		int maxIterations = 100_000;
 		int iterations = 0;
-		int fwdLookups = 0, fwdHits = 0, invHits = 0, invFails = 0;
 		while (worklist.Count > 0) {
 			if (++iterations > maxIterations)
 				break;
@@ -519,18 +510,8 @@ class ConstantDiscovery {
 			foreach ((uint mulConst, uint xor2Const, MulXorInputDomain domain) in patterns) {
 				uint? mulInput = DomainMath.DispatchValToMulXorInput(
 					info, dispatchVal, domain, caseIdx, dvToSv);
-				if (domain != MulXorInputDomain.DispatchVal)
-					fwdLookups++;
-				if (mulInput == null) {
-					invFails++;
+				if (mulInput == null)
 					continue;
-				}
-				if (domain != MulXorInputDomain.DispatchVal) {
-					if (dvToSv != null && dvToSv.ContainsKey((caseIdx, dispatchVal)))
-						fwdHits++;
-					else
-						invHits++;
-				}
 
 				uint nextState = DomainMath.MulXorToNextState(mulInput.Value, mulConst, xor2Const);
 
@@ -542,19 +523,14 @@ class ConstantDiscovery {
 					caseToDispatchVals[newCase] = newSet = new HashSet<uint>();
 
 				if (newSet.Add(newDv)) {
-					// Track the StateVar value for the new dispatch val so future
-					// non-DispatchVal domain transitions can use it without inverse.
+					// Track the StateVar value (STATEVAR domain) for the new dispatch val
+					// so future non-DispatchVal domain transitions can use it without inverse.
 					if (dvToSv != null)
-						dvToSv[(newCase, newDv)] = nextState;
+						dvToSv[(newCase, newDv)] = svInput;
 					if (processed.Add((newCase, newDv)))
 						worklist.Enqueue((newCase, newDv));
 				}
 			}
 		}
-
-		if (info.SplitEmbeddedMul && (nonDispatchDomainPatterns > 0 || dvToSv != null))
-			Logger.vv("    mulxor-prop: split pats={0} ndPats={1} seeds={2} iter={3} fwdLook={4} fwdHit={5} invHit={6} invFail={7} dvToSv={8}",
-				caseToMulXorPatterns.Count, nonDispatchDomainPatterns, seedMatches, iterations,
-				fwdLookups, fwdHits, invHits, invFails, dvToSv?.Count ?? -1);
 	}
 }

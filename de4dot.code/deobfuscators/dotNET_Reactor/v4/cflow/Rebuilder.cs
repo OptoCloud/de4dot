@@ -40,13 +40,6 @@ static class Rebuilder {
 	internal static bool Rebuild(DispatchModel model,
 		Dictionary<int, (StateValue entry, StateValue exit)> traced,
 		Dictionary<Block, SlicedBlock> sliced,
-		Dictionary<Block, int> blockToCase) {
-		return Rebuild(model, traced, sliced, blockToCase, null);
-	}
-
-	internal static bool Rebuild(DispatchModel model,
-		Dictionary<int, (StateValue entry, StateValue exit)> traced,
-		Dictionary<Block, SlicedBlock> sliced,
 		Dictionary<Block, int> blockToCase,
 		Dictionary<int, HashSet<uint>> caseToDispatchVals) {
 		SkipNone = SkipNoTrace = SkipUnknownExit = SkipResolve = SkipTarget = 0;

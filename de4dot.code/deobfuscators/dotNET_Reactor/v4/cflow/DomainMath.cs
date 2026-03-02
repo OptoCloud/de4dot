@@ -58,12 +58,13 @@ static class DomainMath {
 
 	/// <summary>
 	///     Computes the next state from a multiply-XOR transition.
-	///     Input:  DISPATCH-VAL domain (current dispatch value).
-	///     Output: STATE domain (needs StateToDispatchVal to become a dispatch val).
-	///     nextState = (dispatchVal * mulConst) ^ xor2Const
+	///     Input:  the mul-xor input value (domain depends on what the transition
+	///             loads — see MulXorInputDomain and DispatchValToMulXorInput).
+	///     Output: STATE domain (needs StateValToStateVarInput then StateToDispatchVal).
+	///     nextState = (mulInput * mulConst) ^ xor2Const
 	/// </summary>
-	internal static uint MulXorToNextState(uint dispatchVal, uint mulConst, uint xor2Const) =>
-		unchecked(dispatchVal * mulConst ^ xor2Const);
+	internal static uint MulXorToNextState(uint mulInput, uint mulConst, uint xor2Const) =>
+		unchecked(mulInput * mulConst ^ xor2Const);
 
 	/// <summary>
 	///     Computes the next dispatch val for self-loop embedded-mul dispatches

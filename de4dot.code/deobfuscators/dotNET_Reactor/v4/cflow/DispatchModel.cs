@@ -43,9 +43,10 @@ class DispatchModel {
 	public int EntryStackDepth { get; }
 
 	/// <summary>
-	///     Maps (caseIdx, dispatchVal) → StateVar value for split-embedded-mul dispatches.
-	///     Enables forward propagation without needing modular inverse of EmbeddedMul.
-	///     Null when not applicable (non-split dispatches).
+	///     Maps (caseIdx, dispatchVal) → STATEVAR-domain value for split-embedded-mul
+	///     dispatches. Enables forward propagation without needing modular inverse of
+	///     EmbeddedMul. All writes must store STATEVAR-domain values (output of
+	///     StateValToStateVarInput, NOT raw STATE-domain). Null when not applicable.
 	/// </summary>
 	public Dictionary<(int caseIdx, uint dv), uint> DvToSv { get; set; }
 

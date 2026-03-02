@@ -41,11 +41,9 @@ static class LoopMachineRewriter {
 
 	internal static bool TryRewrite(
 		DispatchModel model,
-		Dictionary<int, HashSet<uint>> caseToDispatchVals,
 		Dictionary<Block, int> blockToCase,
 		PatternMatcher matcher,
 		ConstantDiscovery discovery,
-		Simulator simulator,
 		IList<Local> locals) {
 		Detected = Rewrites = 0;
 		SkipNoStore = SkipResolve = SkipTarget = SkipScope = 0;
