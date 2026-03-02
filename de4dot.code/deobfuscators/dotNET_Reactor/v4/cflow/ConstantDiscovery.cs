@@ -168,6 +168,8 @@ class ConstantDiscovery {
 						lastStoreIdx = null;
 						lastStoreVal = null;
 					}
+					if (local != null)
+						localValues.Remove(local);
 
 					stack.Clear();
 					continue;
@@ -251,12 +253,29 @@ class ConstantDiscovery {
 	///     Collects dispatch vals from all discoverable sources.
 	/// </summary>
 	internal Dictionary<int, HashSet<uint>> CollectAllDispatchVals(Block switchBlock, DispatchInfo info,
-		HashSet<Block> reverseReachable, Dictionary<Block, int> blockToCase) {
+		HashSet<Block> reverseReachable, Dictionary<Block, int> blockToCase,
+		out Dictionary<(int caseIdx, uint dv), uint> dvToSvOut) {
 		var caseToDispatchVals = new Dictionary<int, HashSet<uint>>();
 
+		// For split-embedded-mul dispatches, track StateVar values alongside dispatch values
+		// to enable forward-only propagation without needing a modular inverse.
+		Dictionary<(int caseIdx, uint dv), uint> dvToSv = null;
+		if (info.SplitEmbeddedMul && info.HasEmbeddedMul)
+			dvToSv = new Dictionary<(int caseIdx, uint dv), uint>();
+
+		void AddDispatchValWithSv(uint dv, uint stateVarValue) {
+			int ci = DomainMath.NormalizeCaseIndex(info, dv);
+			if (!caseToDispatchVals.TryGetValue(ci, out var set))
+				caseToDispatchVals[ci] = set = new HashSet<uint>();
+			set.Add(dv);
+			if (dvToSv != null)
+				dvToSv[(ci, dv)] = stateVarValue;
+		}
+
 		if (info.InternalStateVarInput.HasValue) {
-			uint dv = DomainMath.StateToDispatchVal(info, info.InternalStateVarInput.Value);
-			AddDispatchVal(caseToDispatchVals, info, dv);
+			uint svInput = info.InternalStateVarInput.Value;
+			uint dv = DomainMath.StateToDispatchVal(info, svInput);
+			AddDispatchValWithSv(dv, svInput);
 		}
 
 		var eligible = new HashSet<Block>();
@@ -283,7 +302,7 @@ class ConstantDiscovery {
 			if (startIdx >= 0) {
 				uint svInput = DomainMath.StateValToStateVarInput(info, stateVal);
 				uint dv = DomainMath.StateToDispatchVal(info, svInput);
-				AddDispatchVal(caseToDispatchVals, info, dv);
+				AddDispatchValWithSv(dv, svInput);
 			}
 		}
 
@@ -306,7 +325,7 @@ class ConstantDiscovery {
 					continue;
 				uint svInput = DomainMath.StateValToStateVarInput(info, result.Value.value);
 				uint dv = DomainMath.StateToDispatchVal(info, svInput);
-				AddDispatchVal(caseToDispatchVals, info, dv);
+				AddDispatchValWithSv(dv, svInput);
 			}
 		}
 
@@ -314,10 +333,10 @@ class ConstantDiscovery {
 		// discovery finds nothing (case blocks use mul-xor transitions, not constant stores).
 		// Falls back to 0 (default local initialization) if no explicit store is found.
 		if (info.SplitEmbeddedMul && caseToDispatchVals.Count == 0) {
-			uint? initialValue = TryFindInitialStateVarValue(switchBlock, info, reverseReachable);
+			uint? initialValue = TryFindInitialStateVarValue(switchBlock, info, reverseReachable, blockToCase);
 			uint seedValue = initialValue ?? 0;
 			uint dv = DomainMath.StateToDispatchVal(info, seedValue);
-			AddDispatchVal(caseToDispatchVals, info, dv);
+			AddDispatchValWithSv(dv, seedValue);
 		}
 
 		// Seeding for xor+stack dispatches where all case bodies use per-case mul-xor
@@ -346,8 +365,9 @@ class ConstantDiscovery {
 			}
 		}
 
-		PropagateMultiplyXor(switchBlock, info, caseToDispatchVals, blockToCase);
+		PropagateMultiplyXor(switchBlock, info, caseToDispatchVals, blockToCase, dvToSv);
 
+		dvToSvOut = dvToSv;
 		return caseToDispatchVals;
 	}
 
@@ -362,11 +382,12 @@ class ConstantDiscovery {
 	///     Seeds dispatch vals for "pure self-loop" embedded-mul dispatches.
 	/// </summary>
 	internal void SeedSelfLoopDispatchVals(Block switchBlock, DispatchInfo info,
-		Dictionary<int, HashSet<uint>> caseToDispatchVals, HashSet<Block> reverseReachable) {
+		Dictionary<int, HashSet<uint>> caseToDispatchVals, HashSet<Block> reverseReachable,
+		Dictionary<Block, int> blockToCase = null) {
 		if (!info.HasEmbeddedMul || info.StateVar == null)
 			return;
 
-		uint? initialValue = TryFindInitialStateVarValue(switchBlock, info, reverseReachable);
+		uint? initialValue = TryFindInitialStateVarValue(switchBlock, info, reverseReachable, blockToCase);
 		// .NET locals default-initialize to 0. If no explicit store is found,
 		// seed with 0 — the simulation hard gate will reject incorrect rewrites.
 		if (initialValue == null)
@@ -381,7 +402,13 @@ class ConstantDiscovery {
 		}
 	}
 
-	uint? TryFindInitialStateVarValue(Block switchBlock, DispatchInfo info, HashSet<Block> reverseReachable) {
+	uint? TryFindInitialStateVarValue(Block switchBlock, DispatchInfo info,
+		HashSet<Block> reverseReachable, Dictionary<Block, int> blockToCase = null) {
+		// Collect all candidates: (value, score) where score 0 = initialization code
+		// (non-case block), score 1 = case block. Prefer initialization code.
+		uint? bestValue = null;
+		int bestScore = int.MaxValue;
+
 		foreach (var block in reverseReachable) {
 			if (block == switchBlock)
 				continue;
@@ -393,40 +420,45 @@ class ConstantDiscovery {
 				if (local != info.StateVar)
 					continue;
 				var result = patternMatcher.SliceBackward(instrs, i - 1);
-				if (result != null && CfgAnalysis.IsTrailingSafe(instrs, i + 1))
-					return result.Value.value;
+				if (result != null && CfgAnalysis.IsTrailingSafe(instrs, i + 1)) {
+					int score = (blockToCase != null && blockToCase.ContainsKey(block)) ? 1 : 0;
+					uint val = result.Value.value;
+					if (score < bestScore || (score == bestScore &&
+					    (bestValue == null || val < bestValue.Value))) {
+						bestScore = score;
+						bestValue = val;
+					}
+				}
 			}
 		}
 
-		return null;
+		return bestValue;
 	}
 
 	/// <summary>
 	///     Fixed-point propagation through multiply-XOR chains.
 	///     Capped at maxTotalVals total dispatch vals to prevent unbounded growth
 	///     when the mul-xor orbit is long (can be up to 2^32 for pathological constants).
+	///     For non-DispatchVal domain transitions, propagation tracks StateVar values
+	///     alongside dispatch values to avoid requiring a modular inverse of EmbeddedMul
+	///     (which doesn't exist when EmbeddedMul is even).
 	/// </summary>
 	internal void PropagateMultiplyXor(Block switchBlock, DispatchInfo info,
-		Dictionary<int, HashSet<uint>> caseToDispatchVals, Dictionary<Block, int> blockToCase) {
+		Dictionary<int, HashSet<uint>> caseToDispatchVals, Dictionary<Block, int> blockToCase,
+		Dictionary<(int caseIdx, uint dv), uint> dvToSv = null) {
 		if (switchBlock.Targets == null)
 			return;
 
-		// isStateDomain: true when the mul-xor transition loads StateVar (not DispatchVar)
-		var caseToMulXorPatterns = new Dictionary<int, List<(uint mulConst, uint xor2Const, bool isStateDomain)>>();
+		var caseToMulXorPatterns = new Dictionary<int, List<(uint mulConst, uint xor2Const, MulXorInputDomain domain)>>();
 
 		void AddMulXorPattern(Block block, int ownerCase) {
 			if (!patternMatcher.TryGetMultiplyXorPattern(block, info,
 				    out uint mulConst, out uint xor2Const, out _, out _, out var loadedVar))
 				return;
-			// isStateDomain only applies to split dispatches where case blocks
-			// load StateVar instead of DispatchVar. For non-split dispatches,
-			// always use dispatch-val domain to match committed behavior.
-			bool isStateDomain = info.SplitEmbeddedMul && info.HasEmbeddedMul
-			                                           && loadedVar != null && loadedVar != info.DispatchVar
-			                                           && loadedVar == info.StateVar;
+			var domain = DomainMath.ClassifyMulXorInput(info, loadedVar);
 			if (!caseToMulXorPatterns.TryGetValue(ownerCase, out var patterns))
-				caseToMulXorPatterns[ownerCase] = patterns = new List<(uint, uint, bool)>();
-			var pat = (mulConst, xor2Const, isStateDomain);
+				caseToMulXorPatterns[ownerCase] = patterns = new List<(uint, uint, MulXorInputDomain)>();
+			var pat = (mulConst, xor2Const, domain);
 			if (!patterns.Contains(pat))
 				patterns.Add(pat);
 		}
@@ -453,12 +485,19 @@ class ConstantDiscovery {
 		if (caseToMulXorPatterns.Count == 0)
 			return;
 
+		int nonDispatchDomainPatterns = 0;
+		foreach (var patterns in caseToMulXorPatterns.Values)
+			foreach (var pat in patterns)
+				if (pat.domain != MulXorInputDomain.DispatchVal) nonDispatchDomainPatterns++;
+
 		var worklist = new Queue<(int caseIdx, uint dispatchVal)>();
 		var processed = new HashSet<(int, uint)>();
 
+		int seedMatches = 0;
 		foreach (var kv in caseToDispatchVals) {
 			if (!caseToMulXorPatterns.ContainsKey(kv.Key))
 				continue;
+			seedMatches++;
 			foreach (uint dv in kv.Value) {
 				if (processed.Add((kv.Key, dv)))
 					worklist.Enqueue((kv.Key, dv));
@@ -467,6 +506,7 @@ class ConstantDiscovery {
 
 		int maxIterations = 100_000;
 		int iterations = 0;
+		int fwdLookups = 0, fwdHits = 0, invHits = 0, invFails = 0;
 		while (worklist.Count > 0) {
 			if (++iterations > maxIterations)
 				break;
@@ -476,18 +516,23 @@ class ConstantDiscovery {
 			if (!caseToMulXorPatterns.TryGetValue(caseIdx, out var patterns))
 				continue;
 
-			foreach ((uint mulConst, uint xor2Const, bool isStateDomain) in patterns) {
-				uint nextState;
-				if (isStateDomain) {
-					// Transition loads StateVar: convert dispatch val → stateVar, apply mul-xor
-					uint? sv = DomainMath.DispatchValToStateVar(info, dispatchVal);
-					if (sv == null)
-						continue;
-					nextState = DomainMath.MulXorToNextState(sv.Value, mulConst, xor2Const);
+			foreach ((uint mulConst, uint xor2Const, MulXorInputDomain domain) in patterns) {
+				uint? mulInput = DomainMath.DispatchValToMulXorInput(
+					info, dispatchVal, domain, caseIdx, dvToSv);
+				if (domain != MulXorInputDomain.DispatchVal)
+					fwdLookups++;
+				if (mulInput == null) {
+					invFails++;
+					continue;
 				}
-				else {
-					nextState = DomainMath.MulXorToNextState(dispatchVal, mulConst, xor2Const);
+				if (domain != MulXorInputDomain.DispatchVal) {
+					if (dvToSv != null && dvToSv.ContainsKey((caseIdx, dispatchVal)))
+						fwdHits++;
+					else
+						invHits++;
 				}
+
+				uint nextState = DomainMath.MulXorToNextState(mulInput.Value, mulConst, xor2Const);
 
 				uint svInput = DomainMath.StateValToStateVarInput(info, nextState);
 				uint newDv = DomainMath.StateToDispatchVal(info, svInput);
@@ -497,10 +542,19 @@ class ConstantDiscovery {
 					caseToDispatchVals[newCase] = newSet = new HashSet<uint>();
 
 				if (newSet.Add(newDv)) {
+					// Track the StateVar value for the new dispatch val so future
+					// non-DispatchVal domain transitions can use it without inverse.
+					if (dvToSv != null)
+						dvToSv[(newCase, newDv)] = nextState;
 					if (processed.Add((newCase, newDv)))
 						worklist.Enqueue((newCase, newDv));
 				}
 			}
 		}
+
+		if (info.SplitEmbeddedMul && (nonDispatchDomainPatterns > 0 || dvToSv != null))
+			Logger.vv("    mulxor-prop: split pats={0} ndPats={1} seeds={2} iter={3} fwdLook={4} fwdHit={5} invHit={6} invFail={7} dvToSv={8}",
+				caseToMulXorPatterns.Count, nonDispatchDomainPatterns, seedMatches, iterations,
+				fwdLookups, fwdHits, invHits, invFails, dvToSv?.Count ?? -1);
 	}
 }

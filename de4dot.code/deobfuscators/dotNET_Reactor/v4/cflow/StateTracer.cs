@@ -17,6 +17,7 @@
     along with de4dot.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+using System;
 using System.Collections.Generic;
 using de4dot.blocks;
 
@@ -43,6 +44,7 @@ static class StateTracer {
 			return null;
 
 		var info = model.Info;
+		var dvToSv = model.DvToSv;
 
 		// Build per-case entry states from collected dispatch vals
 		var result = new Dictionary<int, (StateValue entry, StateValue exit)>();
@@ -55,13 +57,13 @@ static class StateTracer {
 			if (entryState.IsUnknown)
 				continue;
 
-			var exitState = ComputeExitState(caseIdx, dispatchVals, info, sliced);
+			var exitState = ComputeExitState(caseIdx, dispatchVals, info, sliced, dvToSv);
 			result[caseIdx] = (entryState, exitState);
 		}
 
 		// Worklist propagation: exit states feed into entry states of target cases
 		bool changed = true;
-		int maxIterations = result.Count * 4;
+		int maxIterations = Math.Max(result.Count * 4, (int)info.Modulus * 16);
 		while (changed && maxIterations-- > 0) {
 			changed = false;
 			var updates = new Dictionary<int, StateValue>();
@@ -75,6 +77,10 @@ static class StateTracer {
 					uint svInput = DomainMath.StateValToStateVarInput(info, exitVal);
 					uint dv = DomainMath.StateToDispatchVal(info, svInput);
 					int targetCase = DomainMath.NormalizeCaseIndex(info, dv);
+
+					// Track StateVar value for the new dispatch val
+					if (dvToSv != null)
+						dvToSv[(targetCase, dv)] = svInput;
 
 					if (!updates.TryGetValue(targetCase, out var existing))
 						updates[targetCase] = StateValue.Known(dv);
@@ -101,7 +107,7 @@ static class StateTracer {
 						foreach (uint v in joined.Values)
 							newDispatchVals.Add(v);
 
-						var exitState = ComputeExitState(targetCase, newDispatchVals, info, sliced);
+						var exitState = ComputeExitState(targetCase, newDispatchVals, info, sliced, dvToSv);
 						result[targetCase] = (joined, exitState);
 						changed = true;
 					}
@@ -113,7 +119,7 @@ static class StateTracer {
 							newDispatchVals.Add(v);
 					}
 
-					var exitState = ComputeExitState(targetCase, newDispatchVals, info, sliced);
+					var exitState = ComputeExitState(targetCase, newDispatchVals, info, sliced, dvToSv);
 					result[targetCase] = (newEntry, exitState);
 					changed = true;
 				}
@@ -124,15 +130,24 @@ static class StateTracer {
 	}
 
 	static StateValue ComputeExitState(int caseIdx, HashSet<uint> dispatchVals,
-		DispatchInfo info, Dictionary<Block, SlicedBlock> sliced) {
+		DispatchInfo info, Dictionary<Block, SlicedBlock> sliced,
+		Dictionary<(int caseIdx, uint dv), uint> dvToSv = null) {
 		SlicedBlock? caseSlice = null;
 		if (sliced != null) {
+			// Prefer blocks with actual state updates over None blocks (trampolines).
+			// For split dispatches, switch targets are often br-only trampolines sliced
+			// as None; the real state transition is in the case body one hop further.
+			SlicedBlock? noneSlice = null;
 			foreach (var kv in sliced) {
 				if (kv.Value.CaseIndex == caseIdx) {
-					caseSlice = kv.Value;
-					break;
+					if (kv.Value.UpdateKind != StateUpdateKind.None) {
+						caseSlice = kv.Value;
+						break;
+					}
+					noneSlice ??= kv.Value;
 				}
 			}
+			caseSlice ??= noneSlice;
 		}
 
 		if (caseSlice == null)
@@ -148,19 +163,12 @@ static class StateTracer {
 		case StateUpdateKind.MulXor:
 			var nextStates = new HashSet<uint>();
 			foreach (uint dv in dispatchVals) {
-				uint mulInput;
-				if (slice.IsStateDomain) {
-					// Transition loads StateVar: convert dispatch val → stateVar first
-					uint? sv = DomainMath.DispatchValToStateVar(info, dv);
-					if (sv == null)
-						return StateValue.MakeUnknown();
-					mulInput = sv.Value;
-				}
-				else {
-					mulInput = dv;
-				}
+				uint? mulInput = DomainMath.DispatchValToMulXorInput(
+					info, dv, slice.InputDomain, caseIdx, dvToSv);
+				if (mulInput == null)
+					return StateValue.MakeUnknown();
 
-				uint nextState = DomainMath.MulXorToNextState(mulInput, slice.MulConst, slice.XorConst);
+				uint nextState = DomainMath.MulXorToNextState(mulInput.Value, slice.MulConst, slice.XorConst);
 				nextStates.Add(nextState);
 			}
 

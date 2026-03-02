@@ -55,6 +55,17 @@ class Deobfuscator : IBlocksDeobfuscator {
 		bool modified = false;
 		int totalDispatches = 0, embeddedMulDispatches = 0, rewrittenDispatches = 0;
 		int newPipelineHits = 0, legacyHits = 0;
+		int residualSwitches = 0, failedModel = 0;
+		int failedNoDvs = 0, failedWithDvs = 0;
+		var npFailCounts = new Dictionary<string, int>();
+		int rbNone = 0, rbNoTrace = 0, rbUnkExit = 0, rbResolve = 0, rbTarget = 0;
+		int rbScope = 0, rbBounds = 0, rbBranch = 0, rbNoop = 0, rbApplied = 0;
+		int lmDetected = 0, lmRewrites = 0, lmNoStore = 0, lmResolve = 0;
+		int lmTarget = 0, lmScope = 0, lmStack = 0, lmBranch = 0, lmNoop = 0;
+
+		// Reset BlockSlicer diagnostics per method (static counters)
+		BlockSlicer.DiagSliceAttempts = BlockSlicer.DiagSliceMulXor = 0;
+		BlockSlicer.DiagSliceConst = BlockSlicer.DiagSliceNone = 0;
 
 		foreach (var block in allBlocks) {
 			if (block.LastInstr.OpCode.Code != Code.Switch)
@@ -64,8 +75,26 @@ class Deobfuscator : IBlocksDeobfuscator {
 				if (probe.HasEmbeddedMul)
 					embeddedMulDispatches++;
 			}
+			else {
+				// Classify the failure: is this a residual switch from prior rewriting?
+				if (IsResidualSwitch(block))
+					residualSwitches++;
+				else
+					failedModel++;
+			}
 
-			if (TryDeobfuscateDispatch(block, out bool usedNewPipeline)) {
+			// Reset Rebuilder counters before each dispatch to prevent stale accumulation
+			Rebuilder.SkipNone = Rebuilder.SkipNoTrace = Rebuilder.SkipUnknownExit = 0;
+			Rebuilder.SkipResolve = Rebuilder.SkipTarget = Rebuilder.SkipScope = 0;
+			Rebuilder.SkipBounds = Rebuilder.SkipBranch = Rebuilder.SkipNoop = Rebuilder.Applied = 0;
+
+			// Reset LoopMachineRewriter counters (in case TryRewrite isn't called for this dispatch)
+			LoopMachineRewriter.Detected = LoopMachineRewriter.Rewrites = 0;
+			LoopMachineRewriter.SkipNoStore = LoopMachineRewriter.SkipResolve = 0;
+			LoopMachineRewriter.SkipTarget = LoopMachineRewriter.SkipScope = 0;
+			LoopMachineRewriter.SkipStack = LoopMachineRewriter.SkipBranch = LoopMachineRewriter.SkipNoop = 0;
+
+			if (TryDeobfuscateDispatch(block, out bool usedNewPipeline, out string failStage)) {
 				modified = true;
 				rewrittenDispatches++;
 				if (usedNewPipeline)
@@ -73,17 +102,87 @@ class Deobfuscator : IBlocksDeobfuscator {
 				else
 					legacyHits++;
 			}
+			else if (failStage != null) {
+				if (failStage == "no-dvs")
+					failedNoDvs++;
+				else if (failStage.StartsWith("dvs=")) {
+					failedWithDvs++;
+					// Aggregate dispatch type
+					foreach (var tag in new[] { "emul", "split", "std", "sv", "stk", "osv", "nosv" }) {
+						if (failStage.Contains("," + tag + ",") || failStage.EndsWith("," + tag)) {
+							npFailCounts.TryGetValue(tag, out int tc);
+							npFailCounts[tag] = tc + 1;
+						}
+					}
+				}
+			}
+			// Accumulate Rebuilder counters (now safe — reset before each dispatch above)
+			rbNone += Rebuilder.SkipNone; rbNoTrace += Rebuilder.SkipNoTrace;
+			rbUnkExit += Rebuilder.SkipUnknownExit; rbResolve += Rebuilder.SkipResolve;
+			rbTarget += Rebuilder.SkipTarget; rbScope += Rebuilder.SkipScope;
+			rbBounds += Rebuilder.SkipBounds; rbBranch += Rebuilder.SkipBranch;
+			rbNoop += Rebuilder.SkipNoop; rbApplied += Rebuilder.Applied;
+			// Accumulate LoopMachineRewriter counters
+			lmDetected += LoopMachineRewriter.Detected; lmRewrites += LoopMachineRewriter.Rewrites;
+			lmNoStore += LoopMachineRewriter.SkipNoStore; lmResolve += LoopMachineRewriter.SkipResolve;
+			lmTarget += LoopMachineRewriter.SkipTarget; lmScope += LoopMachineRewriter.SkipScope;
+			lmStack += LoopMachineRewriter.SkipStack; lmBranch += LoopMachineRewriter.SkipBranch;
+			lmNoop += LoopMachineRewriter.SkipNoop;
 		}
 
-		if (totalDispatches > 0)
-			Logger.v("  XOR-switch: {0} dispatches ({1} embedded-mul), {2} rewritten (new={3}, legacy={4})",
+		if (totalDispatches > 0 || residualSwitches > 0) {
+			string failInfo = "";
+			foreach (var kv in npFailCounts)
+				failInfo += $" {kv.Key}={kv.Value}";
+			Logger.v("  XOR-switch: {0} dispatches ({1} emul), {2} rewritten (new={3}, leg={4}), {5} res, {6} unrec, fail: {7} no-dv, {8} has-dv [{9}]",
 				totalDispatches, embeddedMulDispatches, rewrittenDispatches,
-				newPipelineHits, legacyHits);
+				newPipelineHits, legacyHits, residualSwitches, failedModel,
+				failedNoDvs, failedWithDvs, failInfo.Trim());
+			if (rbApplied + rbNone + rbNoTrace + rbUnkExit + rbResolve + rbTarget + rbBranch + rbNoop > 0)
+				Logger.v("    rebuild: applied={0} skipNone={1} noTrace={2} unkExit={3} resolve={4} target={5} scope={6} branch={7} noop={8}",
+					rbApplied, rbNone, rbNoTrace, rbUnkExit, rbResolve, rbTarget, rbScope, rbBranch, rbNoop);
+			if (lmDetected + lmRewrites > 0)
+				Logger.v("    loop-machine: detected={0} rewrites={1} noStore={2} resolve={3} target={4} scope={5} stack={6} branch={7} noop={8}",
+					lmDetected, lmRewrites, lmNoStore, lmResolve, lmTarget, lmScope, lmStack, lmBranch, lmNoop);
+			if (BlockSlicer.DiagSliceAttempts > 0)
+				Logger.v("    slice: attempts={0} mulxor={1} const={2} none={3}",
+					BlockSlicer.DiagSliceAttempts, BlockSlicer.DiagSliceMulXor,
+					BlockSlicer.DiagSliceConst, BlockSlicer.DiagSliceNone);
+		}
 		return modified;
 	}
 
+	/// <summary>
+	///     Detects if a switch block is a residual dispatch left behind after
+	///     partial rewriting removed the XOR setup from predecessor blocks.
+	///     These have too few instructions to match the full dispatch pattern
+	///     but still have the rem.un + ldc.i4 + switch suffix.
+	/// </summary>
+	static bool IsResidualSwitch(Block block) {
+		var instrs = block.Instructions;
+		if (instrs.Count >= 5)
+			return false; // Enough instructions for a full pattern — not residual
+		if (instrs.Count < 3)
+			return true; // Just switch or switch+something — clearly residual
+		// Check for partial dispatch header: ... ldc.i4 MOD; rem.un; switch
+		int si = instrs.Count - 1;
+		if (instrs[si].OpCode.Code != Code.Switch)
+			return false;
+		si--;
+		if (instrs[si].OpCode.Code == Code.Rem_Un) {
+			si--;
+			return instrs[si].IsLdcI4();
+		}
+		return true;
+	}
+
 	bool TryDeobfuscateDispatch(Block switchBlock, out bool usedNewPipeline) {
+		return TryDeobfuscateDispatch(switchBlock, out usedNewPipeline, out _);
+	}
+
+	bool TryDeobfuscateDispatch(Block switchBlock, out bool usedNewPipeline, out string failStage) {
 		usedNewPipeline = false;
+		failStage = null;
 
 		// Shared preprocessing: fold opaque constants
 		PatternMatcher.FoldOpaqueConstants(switchBlock);
@@ -94,8 +193,10 @@ class Deobfuscator : IBlocksDeobfuscator {
 
 		// Stage 0: Build dispatch model
 		var model = DispatchModel.TryCreate(switchBlock, patternMatcher, simulator);
-		if (model == null)
+		if (model == null) {
+			failStage = "model";
 			return false;
+		}
 
 		var info = model.Info;
 
@@ -118,20 +219,41 @@ class Deobfuscator : IBlocksDeobfuscator {
 		}
 
 		var caseToDispatchVals = constantDiscovery.CollectAllDispatchVals(
-			switchBlock, info, reverseReachable, blockToCase);
+			switchBlock, info, reverseReachable, blockToCase, out var dvToSv);
+		model.DvToSv = dvToSv;
 		if (info.SelfLoopEligible && caseToDispatchVals.Count == 0)
-			constantDiscovery.SeedSelfLoopDispatchVals(switchBlock, info, caseToDispatchVals, reverseReachable);
+			constantDiscovery.SeedSelfLoopDispatchVals(switchBlock, info, caseToDispatchVals, reverseReachable, blockToCase);
+
+		if (caseToDispatchVals.Count == 0)
+			failStage = "no-dvs";
+		else {
+			string dtype = info.HasEmbeddedMul ? (info.SplitEmbeddedMul ? "split" : "emul") : "std";
+			string sv = info.StateVar != null ? "sv" : "stk";
+			string osv = info.OriginalStateVar != null ? "osv" : "nosv";
+			string dv = info.DispatchVar != null ? "dv" : "nodv";
+			failStage = $"dvs={caseToDispatchVals.Count}/{info.Modulus},{dtype},{sv},{osv},{dv}";
+		}
 
 		// Run both pipelines: new pipeline handles what it can, legacy handles the rest.
 		// The new pipeline rewrites case blocks it can trace; the legacy pipeline
 		// picks up remaining cases through its own pattern matching.
 		bool modified = false;
 
+		// Loop-machine path: targeted constant-transition shortcut for split-embedded-mul
+		// dispatchers where case blocks write constants to StateVar (no OriginalStateVar).
+		if (info.SplitEmbeddedMul && info.OriginalStateVar == null && info.StateVar != null) {
+			if (LoopMachineRewriter.TryRewrite(model, caseToDispatchVals, blockToCase,
+					patternMatcher, constantDiscovery, simulator, locals)) {
+				modified = true;
+			}
+		}
+
 		// New pipeline: handles cases the legacy pipeline misses.
-		if (TryNewPipeline(model, caseToDispatchVals, blockToCase)) {
+		if (TryNewPipeline(model, caseToDispatchVals, blockToCase, out string newPipeStage)) {
 			usedNewPipeline = true;
 			modified = true;
 		}
+		// Don't overwrite failStage — keep the dispatch type info for diagnostics
 
 		// Legacy pipeline (runs on remaining unhandled cases)
 		modified |= RewriteConstantSources(switchBlock, info);
@@ -140,30 +262,47 @@ class Deobfuscator : IBlocksDeobfuscator {
 			modified |= RewriteSelfLoopSources(switchBlock, info, caseToDispatchVals, blockToCase);
 		modified |= LegacyRewriter.RemoveDeadSwitchCases(switchBlock, info, caseToDispatchVals);
 
+		if (modified)
+			failStage = null;
+
 		return modified;
 	}
 
 	bool TryNewPipeline(DispatchModel model,
 		Dictionary<int, HashSet<uint>> caseToDispatchVals,
 		Dictionary<Block, int> blockToCase) {
+		return TryNewPipeline(model, caseToDispatchVals, blockToCase, out _);
+	}
+
+	bool TryNewPipeline(DispatchModel model,
+		Dictionary<int, HashSet<uint>> caseToDispatchVals,
+		Dictionary<Block, int> blockToCase, out string newPipeStage) {
+		newPipeStage = null;
 		// Early exit: tracing needs dispatch vals to seed from
-		if (caseToDispatchVals.Count == 0)
+		if (caseToDispatchVals.Count == 0) {
+			newPipeStage = "no-dvs";
 			return false;
+		}
 
 		// Stage 1: Slice (computed once, shared by tracer and rebuilder)
 		var sliced = BlockSlicer.SliceAll(model, null,
 			blockToCase, patternMatcher, constantDiscovery);
-		if (sliced == null)
+		if (sliced == null) {
+			newPipeStage = "slice-null";
 			return false;
+		}
 
-		// Stage 2: Trace
+		// Stage 2: Trace (propagates dispatch vals through the state machine)
 		var traced = StateTracer.Trace(model, caseToDispatchVals,
 			blockToCase, sliced);
-		if (traced == null)
-			return false;
+		// traced may be null if no cases could be traced, but the Rebuilder
+		// can still rewrite Constant blocks (which don't need entry dispatch vals).
 
-		// Stage 3: Rebuild
-		return Rebuilder.Rebuild(model, traced, sliced, blockToCase);
+		// Stage 3: Rebuild (uses per-block slice data for exits, not per-case traced exits)
+		bool result = Rebuilder.Rebuild(model, traced, sliced, blockToCase, caseToDispatchVals);
+		if (!result)
+			newPipeStage = "rebuild-none";
+		return result;
 	}
 
 	// ── Legacy pipeline methods ──────────────────────────────────────

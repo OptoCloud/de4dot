@@ -42,7 +42,7 @@ struct SlicedBlock {
 	public uint? ConstantNext; // STATE-domain value for Constant kind
 	public uint MulConst; // for MulXor kind
 	public uint XorConst; // for MulXor kind
-	public bool IsStateDomain; // true when MulXor loads StateVar (not DispatchVar)
+	public MulXorInputDomain InputDomain; // which domain the MulXor transition loads from
 }
 
 /// <summary>
@@ -73,23 +73,24 @@ static class BlockSlicer {
 				result[source] = sliced.Value;
 		}
 
-		// For split dispatches: scan switch targets (case heads) directly.
-		// These may not be in switchBlock.Sources (they branch to a predecessor first).
-		if (switchBlock.Targets != null) {
-			for (int i = 0; i < switchBlock.Targets.Count; i++) {
-				var target = switchBlock.Targets[i];
-				if (target == null || target == switchBlock || result.ContainsKey(target))
-					continue;
-				if (!blockToCase.TryGetValue(target, out int caseIdx))
-					continue;
-				var sliced = TrySlice(target, caseIdx, info, matcher, discovery);
-				if (sliced != null)
-					result[target] = sliced.Value;
-			}
+		// Scan ALL blocks in blockToCase — not just switch sources/targets.
+		// For split dispatches, case tail blocks branch to the predecessor (not
+		// the switch), so they aren't in switchBlock.Sources. For multi-block
+		// case bodies, the state transition pattern is typically in the tail.
+		foreach (var kv in blockToCase) {
+			var block = kv.Key;
+			if (block == switchBlock || result.ContainsKey(block))
+				continue;
+			var sliced = TrySlice(block, kv.Value, info, matcher, discovery);
+			if (sliced != null)
+				result[block] = sliced.Value;
 		}
 
 		return result.Count > 0 ? result : null;
 	}
+
+	// Diagnostic counters for slice analysis
+	internal static int DiagSliceAttempts, DiagSliceMulXor, DiagSliceConst, DiagSliceNone;
 
 	/// <summary>
 	///     Attempts to slice a single block into payload + state-update.
@@ -100,6 +101,8 @@ static class BlockSlicer {
 		if (instrs.Count == 0)
 			return null;
 
+		DiagSliceAttempts++;
+
 		// Try multiply-XOR pattern first (it's longer and more specific)
 		if (matcher.TryGetMultiplyXorPattern(block, info,
 			    out uint mulConst, out uint xorConst, out int patStart, out int patLen,
@@ -107,9 +110,8 @@ static class BlockSlicer {
 			if (CfgAnalysis.IsTrailingSafe(instrs, patStart + patLen)) {
 				int depth = StackAnalyzer.DepthAt(instrs, patStart);
 				if (depth >= 0) {
-					bool isStateDomain = info.HasEmbeddedMul && loadedVar != null
-					                                         && loadedVar != info.DispatchVar &&
-					                                         loadedVar == info.StateVar;
+					DiagSliceMulXor++;
+					var inputDomain = DomainMath.ClassifyMulXorInput(info, loadedVar);
 					return new SlicedBlock {
 						Block = block,
 						CaseIndex = caseIndex,
@@ -118,7 +120,7 @@ static class BlockSlicer {
 						StackDepthAtCut = depth,
 						MulConst = mulConst,
 						XorConst = xorConst,
-						IsStateDomain = isStateDomain
+						InputDomain = inputDomain
 					};
 				}
 			}
@@ -131,6 +133,7 @@ static class BlockSlicer {
 			if (CfgAnalysis.IsTrailingSafe(instrs, patternEnd)) {
 				int depth = StackAnalyzer.DepthAt(instrs, startIdx);
 				if (depth >= 0) {
+					DiagSliceConst++;
 					return new SlicedBlock {
 						Block = block,
 						CaseIndex = caseIndex,
@@ -155,6 +158,7 @@ static class BlockSlicer {
 		}
 
 		// No recognized state update — mark as None
+		DiagSliceNone++;
 		return new SlicedBlock {
 			Block = block,
 			CaseIndex = caseIndex,

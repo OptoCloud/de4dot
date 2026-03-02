@@ -192,7 +192,7 @@ class PatternMatcher {
 			var stackVal = SliceBackward(instrs, idx - 1);
 			if (stackVal == null)
 				return false;
-			if (stackVal.Value.startIdx > 10)
+			if (idx - 1 - stackVal.Value.startIdx > 50)
 				return false;
 			stateVar = null;
 			internalStateVarInput = stackVal.Value.value;

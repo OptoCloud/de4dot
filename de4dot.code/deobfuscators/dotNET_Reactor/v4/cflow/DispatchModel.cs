@@ -43,6 +43,13 @@ class DispatchModel {
 	public int EntryStackDepth { get; }
 
 	/// <summary>
+	///     Maps (caseIdx, dispatchVal) → StateVar value for split-embedded-mul dispatches.
+	///     Enables forward propagation without needing modular inverse of EmbeddedMul.
+	///     Null when not applicable (non-split dispatches).
+	/// </summary>
+	public Dictionary<(int caseIdx, uint dv), uint> DvToSv { get; set; }
+
+	/// <summary>
 	///     Updates the Info field (needed when OriginalStateVar is discovered after construction).
 	/// </summary>
 	internal void SetInfo(DispatchInfo updatedInfo) => Info = updatedInfo;
@@ -138,6 +145,17 @@ class DispatchModel {
 			return null;
 		if (info.Modulus != (uint)switchBlock.Targets.Count)
 			return null;
+
+		// When dispatch info was extracted from a folded constant (InternalStateVarInput),
+		// verify via simulation that the constant actually produces the expected case index.
+		// This rejects false positives from the relaxed expression length guard.
+		if (info.InternalStateVarInput.HasValue) {
+			uint svInput = info.InternalStateVarInput.Value;
+			uint dv = DomainMath.StateToDispatchVal(info, svInput);
+			int expectedCase = DomainMath.NormalizeCaseIndex(info, dv);
+			if (!simulator.VerifyDispatch(switchBlock, info, svInput, expectedCase))
+				return null;
+		}
 
 		return new DispatchModel(switchBlock, info, simulator);
 	}

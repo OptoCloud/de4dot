@@ -17,9 +17,22 @@
     along with de4dot.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+using System.Collections.Generic;
 using dnlib.DotNet.Emit;
 
 namespace de4dot.code.deobfuscators.dotNET_Reactor.v4.cflow;
+
+/// <summary>
+///     Which domain a mul-xor transition's input variable belongs to.
+/// </summary>
+enum MulXorInputDomain {
+	/// <summary>Transition loads DispatchVar (or unknown local). Input is dispatch-val domain.</summary>
+	DispatchVal,
+	/// <summary>Transition loads StateVar (distinct from DispatchVar). Input is state-var domain.</summary>
+	StateVar,
+	/// <summary>Transition loads OriginalStateVar. Input is original-state domain (before OriginalXorKey XOR).</summary>
+	OriginalState
+}
 
 /// <summary>
 ///     Domain conversion helpers for XOR-switch dispatch deobfuscation.
@@ -137,5 +150,54 @@ static class DomainMath {
 		if (code == Code.Mul) return unchecked(left * right);
 		if (code == Code.Add) return unchecked(left + right);
 		return unchecked(left - right);
+	}
+
+	/// <summary>
+	///     Classifies which domain a mul-xor transition's loaded variable belongs to.
+	///     Centralizes the logic previously duplicated (with inconsistencies) in
+	///     BlockSlicer and PropagateMultiplyXor.
+	/// </summary>
+	internal static MulXorInputDomain ClassifyMulXorInput(DispatchInfo info, Local loadedVar) {
+		if (loadedVar == null || !info.HasEmbeddedMul)
+			return MulXorInputDomain.DispatchVal;
+		if (info.OriginalStateVar != null && loadedVar == info.OriginalStateVar)
+			return MulXorInputDomain.OriginalState;
+		if (info.StateVar != null && loadedVar == info.StateVar && loadedVar != info.DispatchVar)
+			return MulXorInputDomain.StateVar;
+		return MulXorInputDomain.DispatchVal;
+	}
+
+	/// <summary>
+	///     Converts a dispatch val to the mul-xor input value for the given domain.
+	///     DispatchVal: identity (dispatchVal itself).
+	///     StateVar: inverse of StateToDispatchVal.
+	///     OriginalState: StateVar value XORed with OriginalXorKey.
+	///     Returns null if the inverse doesn't exist (even EmbeddedMul).
+	///     When dvToSv is provided, uses the forward map for StateVar/OriginalState
+	///     domains to avoid needing the modular inverse.
+	/// </summary>
+	internal static uint? DispatchValToMulXorInput(DispatchInfo info, uint dispatchVal,
+		MulXorInputDomain domain, int caseIdx,
+		Dictionary<(int caseIdx, uint dv), uint> dvToSv = null) {
+		if (domain == MulXorInputDomain.DispatchVal)
+			return dispatchVal;
+
+		// Need StateVar value for both StateVar and OriginalState domains
+		uint sv;
+		if (dvToSv != null && dvToSv.TryGetValue((caseIdx, dispatchVal), out sv)) {
+			// Forward map hit
+		}
+		else {
+			uint? svMaybe = DispatchValToStateVar(info, dispatchVal);
+			if (svMaybe == null)
+				return null;
+			sv = svMaybe.Value;
+		}
+
+		if (domain == MulXorInputDomain.StateVar)
+			return sv;
+
+		// OriginalState: stateVar value XORed with OriginalXorKey
+		return unchecked(sv ^ info.OriginalXorKey);
 	}
 }
