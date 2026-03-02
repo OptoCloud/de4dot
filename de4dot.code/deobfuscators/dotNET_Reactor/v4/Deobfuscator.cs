@@ -133,7 +133,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// <summary>
 		/// Returns per-method block deobfuscators run during control flow deobfuscation.
 		/// Order matters: DotNetReactorCflowDeobfuscator (existing v4 patterns) runs first,
-		/// then XorSwitchCflowDeobfuscator (v6.x XOR-keyed switch state machines), then
+		/// then XorSwitchDeobfuscator (v6.x XOR-keyed switch state machines), then
 		/// MethodCallInliner (inline small helper methods after cflow is resolved).
 		/// </summary>
 		public override IEnumerable<IBlocksDeobfuscator> BlocksDeobfuscators {
@@ -141,7 +141,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				var list = new List<IBlocksDeobfuscator>();
 				if (CanInlineMethods) {
 					list.Add(new DotNetReactorCflowDeobfuscator());
-					list.Add(new cflow.Deobfuscator());
+					list.Add(new xorswitch.XorSwitchDeobfuscator());
 					list.Add(new MethodCallInliner(false));
 				}
 				return list;

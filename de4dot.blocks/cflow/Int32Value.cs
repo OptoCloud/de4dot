@@ -345,6 +345,13 @@ namespace de4dot.blocks.cflow {
 			}
 			if ((ReferenceEquals(a, b) && a.IsNonZero()) || b.HasValue(1))
 				return Zero;
+			// Power-of-two modulus: (uint)a % (uint)b == (uint)a & (uint)(b - 1)
+			// And() propagates partial bit-validity correctly.
+			if (b.AllBitsValid()) {
+				uint bu = (uint)b.Value;
+				if (bu != 0 && (bu & (bu - 1)) == 0)
+					return And(a, new Int32Value((int)(bu - 1)));
+			}
 			return CreateUnknown();
 		}
 
