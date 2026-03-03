@@ -42,8 +42,6 @@ class XorSwitchDeobfuscator : IBlocksDeobfuscator {
 		int totalFailed = 0;
 		int totalApplied = 0;
 		int totalDead = 0;
-		var modulusCounts = new Dictionary<int, int>();
-
 		foreach (var block in allBlocks) {
 			if (block.LastInstr.OpCode.Code != Code.Switch)
 				continue;
@@ -62,11 +60,6 @@ class XorSwitchDeobfuscator : IBlocksDeobfuscator {
 
 			totalDispatches++;
 			var node = dispatch.Value;
-
-			// Step 0 diagnostic: tally modulus (CaseTargets.Count) per dispatch
-			int m = node.CaseTargets.Count;
-			modulusCounts.TryGetValue(m, out int cnt);
-			modulusCounts[m] = cnt + 1;
 
 			// Resolve edges
 			var resolver = new EdgeResolver(node, blocks);
@@ -91,19 +84,9 @@ class XorSwitchDeobfuscator : IBlocksDeobfuscator {
 			}
 		}
 
-		if (totalDispatches > 0) {
+		if (totalDispatches > 0)
 			Logger.v("  XOR-switch: {0} dispatches, {1} edges resolved, {2} failed, {3} applied, {4} dead cases",
 				totalDispatches, totalResolved, totalFailed, totalApplied, totalDead);
-
-			// Step 0 diagnostic: dump modulus distribution (temporary — remove after one run)
-			var sortedModuli = new List<KeyValuePair<int, int>>(modulusCounts);
-			sortedModuli.Sort((a, b) => a.Key.CompareTo(b.Key));
-			foreach (var kv in sortedModuli) {
-				uint mu = (uint)kv.Key;
-				bool isPow2 = mu != 0 && (mu & (mu - 1)) == 0;
-				Logger.n("    M={0}: {1} dispatches{2}", kv.Key, kv.Value, isPow2 ? " (pow2)" : "");
-			}
-		}
 
 		return modified;
 	}

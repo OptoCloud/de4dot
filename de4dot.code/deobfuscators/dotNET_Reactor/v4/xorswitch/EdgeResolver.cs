@@ -175,10 +175,13 @@ class EdgeResolver {
 							if (!IsUnconditionalPredecessor(pred))
 								continue;
 
-							if (dispatch.BlockToCase.TryGetValue(pred, out int ci) && caseStateVar.ContainsKey(ci))
+							bool hasCaseIdx = dispatch.BlockToCase.TryGetValue(pred, out int ci);
+							if (hasCaseIdx && caseStateVar.ContainsKey(ci))
 								continue;
 
 							foreach (var trySeed in allSeeds) {
+								if (hasCaseIdx && !VerifySeedRoutesToCase(trySeed, ci))
+									continue;
 								var edge = TryResolveEdge(pred, trySeed);
 								if (edge != null) {
 									edges.Add(edge.Value);
@@ -215,6 +218,8 @@ class EdgeResolver {
 							if (!IsUnconditionalPredecessor(passthrough))
 								continue;
 
+							bool hasPtCaseIdx = dispatch.BlockToCase.TryGetValue(passthrough, out int ptCaseIdx);
+
 							foreach (var src in new List<Block>(passthrough.Sources)) {
 								if (indirectResolved.Contains(src))
 									continue;
@@ -229,6 +234,8 @@ class EdgeResolver {
 
 								if (edge == null) {
 									foreach (var seed in allSeeds) {
+										if (hasPtCaseIdx && !VerifySeedRoutesToCase(seed, ptCaseIdx))
+											continue;
 										edge = TryResolveIndirectEdge(src, intermediates, seed);
 										if (edge != null)
 											break;
@@ -473,7 +480,7 @@ class EdgeResolver {
 				targetIncoming = svIv.Value;
 		}
 
-		var boundary = StateUpdateFinder.Find(predecessor, dispatch);
+		var boundary = StateUpdateFinder.Find(predecessor, dispatch, blocks.Locals);
 		int instrsToRemove;
 		int stackPops;
 
@@ -485,9 +492,6 @@ class EdgeResolver {
 			instrsToRemove = predInstrs[predInstrs.Count - 1].IsBr() ? 1 : 0;
 			stackPops = 0;
 		}
-
-		if (!VerifyEdge(predecessor, caseIndex, seedStateVar))
-			return null;
 
 		return new ResolvedEdge {
 			Predecessor = predecessor,
@@ -519,21 +523,19 @@ class EdgeResolver {
 		if (!fallThroughToSwitch && !branchToSwitch)
 			return null;
 
-		if (fallThroughToSwitch) {
-			var edge = TryResolveConditionalPath(predecessor, false);
-			if (edge != null)
+		var edge = TryResolveConditionalPath(predecessor);
+		if (edge != null) {
+			// Add once per path that leads to the switch so Apply retargets each one
+			if (fallThroughToSwitch)
 				edges.Add(edge.Value);
-		}
-		if (branchToSwitch) {
-			var edge = TryResolveConditionalPath(predecessor, true);
-			if (edge != null)
+			if (branchToSwitch)
 				edges.Add(edge.Value);
 		}
 
 		return edges;
 	}
 
-	ResolvedEdge? TryResolveConditionalPath(Block predecessor, bool branchTaken) {
+	ResolvedEdge? TryResolveConditionalPath(Block predecessor) {
 		var switchBlock = dispatch.SwitchBlock;
 		var switchInstrs = switchBlock.Instructions;
 		var predInstrs = predecessor.Instructions;
@@ -677,9 +679,6 @@ class EdgeResolver {
 				targetIncoming = svIv.Value;
 		}
 
-		if (!VerifyIndirectEdge(source, intermediates, caseIndex, seedStateVar))
-			return null;
-
 		if (source.Parent != target.Parent)
 			return null;
 
@@ -693,142 +692,6 @@ class EdgeResolver {
 			StackCleanupPops = exitDepth,
 			TargetIncomingStateVar = targetIncoming,
 		};
-	}
-
-	bool VerifyIndirectEdge(Block source, List<Block> intermediates, int expectedCaseIndex, int? seedStateVar = null) {
-		var switchInstrs = dispatch.SwitchBlock.Instructions;
-		var srcInstrs = source.Instructions;
-
-		var emu = new InstructionEmulator();
-		emu.Initialize(method, false);
-
-		if (dispatch.StateVar != null)
-			emu.SetLocal(dispatch.StateVar, seedStateVar.HasValue
-				? new Int32Value(seedStateVar.Value)
-				: Int32Value.CreateUnknown());
-
-		Int32Value preRemDividend = null;
-
-		try {
-			int srcEnd = srcInstrs.Count;
-			if (srcEnd > 0 && srcInstrs[srcEnd - 1].IsBr())
-				srcEnd--;
-			emu.Emulate(srcInstrs, 0, srcEnd);
-
-			foreach (var mid in intermediates) {
-				var midInstrs = mid.Instructions;
-				int midEnd = midInstrs.Count;
-				if (midEnd > 0 && midInstrs[midEnd - 1].IsBr())
-					midEnd--;
-				emu.Emulate(midInstrs, 0, midEnd);
-			}
-
-			int switchIdx = FindSwitchIndex(switchInstrs);
-			int remIdx = FindRemUnIndex(switchInstrs);
-			if (switchIdx < 0)
-				return false;
-			int emuEnd = switchIdx;
-
-			if (remIdx > 0 && remIdx < emuEnd) {
-				emu.Emulate(switchInstrs, 0, remIdx);
-				if (emu.StackSize() >= 2) {
-					var divisor = emu.Pop();
-					if (emu.Peek() is Int32Value dv)
-						preRemDividend = dv;
-					emu.Push(divisor);
-					if (divisor is Int32Value divIv && divIv.AllBitsValid() &&
-						(uint)divIv.Value != (uint)dispatch.CaseTargets.Count)
-						preRemDividend = null;
-				}
-				emu.Emulate(switchInstrs, remIdx, emuEnd);
-			}
-			else {
-				emu.Emulate(switchInstrs, 0, emuEnd);
-			}
-		}
-		catch {
-			return false;
-		}
-
-		if (emu.StackSize() < 1)
-			return false;
-
-		var tos = emu.Pop();
-		if (tos is Int32Value iv) {
-			if (iv.AllBitsValid())
-				return iv.Value == expectedCaseIndex;
-			if (preRemDividend != null) {
-				var partial = TryPartialCaseIndex(preRemDividend);
-				return partial.HasValue && partial.Value == expectedCaseIndex;
-			}
-		}
-		return false;
-	}
-
-	bool VerifyEdge(Block predecessor, int expectedCaseIndex, int? seedStateVar = null) {
-		var switchInstrs = dispatch.SwitchBlock.Instructions;
-
-		var chain = BuildEmulationChain(predecessor);
-
-		var emu = new InstructionEmulator();
-		emu.Initialize(method, false);
-
-		if (dispatch.StateVar != null)
-			emu.SetLocal(dispatch.StateVar, seedStateVar.HasValue
-				? new Int32Value(seedStateVar.Value)
-				: Int32Value.CreateUnknown());
-
-		Int32Value preRemDividend = null;
-
-		try {
-			foreach (var block in chain) {
-				var instrs = block.Instructions;
-				int end = instrs.Count;
-				if (end > 0 && instrs[end - 1].IsBr())
-					end--;
-				emu.Emulate(instrs, 0, end);
-			}
-
-			int switchIdx = FindSwitchIndex(switchInstrs);
-			int remIdx = FindRemUnIndex(switchInstrs);
-			if (switchIdx < 0)
-				return false;
-			int emuEnd = switchIdx;
-
-			if (remIdx > 0 && remIdx < emuEnd) {
-				emu.Emulate(switchInstrs, 0, remIdx);
-				if (emu.StackSize() >= 2) {
-					var divisor = emu.Pop();
-					if (emu.Peek() is Int32Value dv)
-						preRemDividend = dv;
-					emu.Push(divisor);
-					if (divisor is Int32Value divIv && divIv.AllBitsValid() &&
-						(uint)divIv.Value != (uint)dispatch.CaseTargets.Count)
-						preRemDividend = null;
-				}
-				emu.Emulate(switchInstrs, remIdx, emuEnd);
-			}
-			else {
-				emu.Emulate(switchInstrs, 0, emuEnd);
-			}
-		}
-		catch {
-			return false;
-		}
-
-		if (emu.StackSize() < 1)
-			return false;
-
-		var tos = emu.Pop();
-		if (tos is Int32Value iv) {
-			if (iv.AllBitsValid())
-				return iv.Value == expectedCaseIndex;
-			if (preRemDividend != null) {
-				var partial = TryPartialCaseIndex(preRemDividend);
-				return partial.HasValue && partial.Value == expectedCaseIndex;
-			}
-		}
-		return false;
 	}
 
 	// --- Phase 5: Algebraic seed extraction ---
@@ -892,7 +755,7 @@ class EdgeResolver {
 						int nextSeed = (int)nextSeedU;
 						int nextCase = (int)(nextSeedU % (uint)modulus);
 
-						if (nextCase >= 0 && nextCase < dispatch.CaseTargets.Count) {
+						if (nextCase < dispatch.CaseTargets.Count) {
 							if (!derivedSeeds.TryGetValue(nextCase, out var seedSet)) {
 								seedSet = new HashSet<int>();
 								derivedSeeds[nextCase] = seedSet;
@@ -935,6 +798,18 @@ class EdgeResolver {
 		}
 
 		return newSeedCount;
+	}
+
+	/// <summary>
+	///     O(1) algebraic check: does this seed route to the expected case index?
+	///     The seed is already the post-XOR dispatch value (V_7 = incoming_state ^ K),
+	///     so case_index = seed % M with no additional XOR.
+	/// </summary>
+	bool VerifySeedRoutesToCase(int seed, int expectedCaseIndex) {
+		int M = dispatch.CaseTargets.Count;
+		if (M < 2)
+			return true;
+		return (int)((uint)seed % (uint)M) == expectedCaseIndex;
 	}
 
 	// --- Helper methods ---

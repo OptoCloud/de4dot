@@ -119,7 +119,8 @@ static class DispatchDetector {
 		var instrs = switchBlock.Instructions;
 		for (int i = 0; i < instrs.Count - 1; i++) { // exclude the switch itself
 			var instr = instrs[i].Instruction;
-			instr.CalculateStackUsage(out int pushes, out int pops);
+			instr.CalculateStackUsage(false, out int pushes, out int pops);
+			if (pops == -1) { depth = 0; continue; } // stack-clearing instruction (throw/rethrow)
 			depth -= pops;
 			if (depth < minDepth)
 				minDepth = depth;

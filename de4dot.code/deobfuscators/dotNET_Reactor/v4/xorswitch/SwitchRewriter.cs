@@ -31,6 +31,10 @@ static class SwitchRewriter {
 		int applied = 0;
 
 		foreach (var edge in edges) {
+			// Self-loop guard: never redirect a block to itself
+			if (edge.Target == edge.Predecessor)
+				continue;
+
 			// Scope check: predecessor and target must be in the same exception handler scope
 			if (edge.Predecessor.Parent != edge.Target.Parent)
 				continue;
@@ -103,10 +107,6 @@ static class SwitchRewriter {
 	static void CleanupDeadCases(DispatchNode dispatch, List<ResolvedEdge> edges) {
 		if (edges.Count == 0)
 			return;
-
-		var rewrittenTargets = new HashSet<Block>();
-		foreach (var edge in edges)
-			rewrittenTargets.Add(edge.Target);
 
 		foreach (var caseTarget in dispatch.CaseTargets) {
 			if (caseTarget.Sources.Count == 0 && caseTarget.Parent != null) {

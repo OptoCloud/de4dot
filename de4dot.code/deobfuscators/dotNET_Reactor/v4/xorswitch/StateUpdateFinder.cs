@@ -34,9 +34,9 @@ struct StateUpdateBoundary {
 ///     Determines where payload ends and state-update begins within a predecessor block.
 /// </summary>
 static class StateUpdateFinder {
-	public static StateUpdateBoundary Find(Block block, DispatchNode dispatch) {
+	public static StateUpdateBoundary Find(Block block, DispatchNode dispatch, IList<Local> allLocals) {
 		if (dispatch.StateVar != null) {
-			var result = FindForLocalVar(block, dispatch.StateVar);
+			var result = FindForLocalVar(block, dispatch.StateVar, allLocals);
 			if (result.Found)
 				return result;
 			// Predecessor may push state on the stack instead of storing to stateVar
@@ -50,7 +50,7 @@ static class StateUpdateFinder {
 	///     For local-var based state: scan backward for the last stloc to the state var,
 	///     then backward-slice to find the cut point.
 	/// </summary>
-	static StateUpdateBoundary FindForLocalVar(Block block, Local stateVar) {
+	static StateUpdateBoundary FindForLocalVar(Block block, Local stateVar, IList<Local> allLocals) {
 		var instrs = block.Instructions;
 
 		// Find the last store to the state variable
@@ -58,8 +58,7 @@ static class StateUpdateFinder {
 		for (int i = instrs.Count - 1; i >= 0; i--) {
 			if (!instrs[i].IsStloc())
 				continue;
-			var local = instrs[i].Instruction.GetLocal(new[] { stateVar });
-			if (local == stateVar) {
+			if (Instr.GetLocalVar(allLocals, instrs[i]) == stateVar) {
 				storeIdx = i;
 				break;
 			}
@@ -75,6 +74,8 @@ static class StateUpdateFinder {
 
 		for (int i = storeIdx - 1; i >= 0 && neededPops > 0; i--) {
 			instrs[i].Instruction.CalculateStackUsage(false, out int pushes, out int pops);
+			if (pops == -1)
+				break; // stack-clearing instruction (throw/rethrow) — stop slice
 			neededPops -= pushes;
 			neededPops += pops;
 			cutPoint = i;
@@ -82,7 +83,7 @@ static class StateUpdateFinder {
 
 		// Compute stack depth at the cut point (tolerant of incoming stack values)
 		var depths = ComputeStackDepthsTolerant(instrs);
-		int depthAtCut = depths != null && cutPoint < depths.Length ? depths[cutPoint] : 0;
+		int depthAtCut = depths[cutPoint];
 
 		return new StateUpdateBoundary {
 			CutPoint = cutPoint,
@@ -99,8 +100,6 @@ static class StateUpdateFinder {
 	static StateUpdateBoundary FindForStack(Block block) {
 		var instrs = block.Instructions;
 		var depths = ComputeStackDepthsTolerant(instrs);
-		if (depths == null)
-			return new StateUpdateBoundary { Found = false };
 
 		// The last instruction may be br/fallthrough to the switch.
 		// We need to find the point where the stack starts building the switch value.

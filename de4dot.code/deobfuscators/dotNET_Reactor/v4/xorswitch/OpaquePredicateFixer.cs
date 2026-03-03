@@ -18,7 +18,6 @@
 */
 
 using de4dot.blocks;
-using dnlib.DotNet.Emit;
 
 namespace de4dot.code.deobfuscators.dotNET_Reactor.v4.xorswitch;
 
@@ -52,27 +51,4 @@ static class OpaquePredicateFixer {
 		return changed;
 	}
 
-	/// <summary>
-	///     Returns true if block contains only nop/br instructions (pass-through relay).
-	/// </summary>
-	public static bool IsFunnelBlock(Block block) {
-		foreach (var instr in block.Instructions) {
-			var code = instr.OpCode.Code;
-			if (code != Code.Nop && code != Code.Br && code != Code.Br_S)
-				return false;
-		}
-		return true;
-	}
-
-	/// <summary>
-	///     Returns true if block contains only pop/nop/br (opaque predicate relay).
-	/// </summary>
-	public static bool IsPopThroughBlock(Block block) {
-		foreach (var instr in block.Instructions) {
-			var code = instr.OpCode.Code;
-			if (code != Code.Pop && code != Code.Nop && code != Code.Br && code != Code.Br_S)
-				return false;
-		}
-		return true;
-	}
 }
