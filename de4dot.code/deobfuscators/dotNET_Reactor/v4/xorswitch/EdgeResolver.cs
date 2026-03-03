@@ -403,10 +403,14 @@ class EdgeResolver {
 		var emu = new InstructionEmulator();
 		emu.Initialize(method, false);
 
-		if (dispatch.StateVar != null)
-			emu.SetLocal(dispatch.StateVar, seedStateVar.HasValue
-				? new Int32Value(seedStateVar.Value)
-				: Int32Value.CreateUnknown());
+		if (dispatch.StateVar != null) {
+			if (seedStateVar.HasValue)
+				emu.SetLocal(dispatch.StateVar, new Int32Value(seedStateVar.Value));
+			else if (chain[0].Sources.Count == 0)
+				emu.SetLocal(dispatch.StateVar, Int32Value.Zero);
+			else
+				emu.SetLocal(dispatch.StateVar, Int32Value.CreateUnknown());
+		}
 
 		Int32Value preRemDividend = null;
 
@@ -599,10 +603,14 @@ class EdgeResolver {
 		var emu = new InstructionEmulator();
 		emu.Initialize(method, false);
 
-		if (dispatch.StateVar != null)
-			emu.SetLocal(dispatch.StateVar, seedStateVar.HasValue
-				? new Int32Value(seedStateVar.Value)
-				: Int32Value.CreateUnknown());
+		if (dispatch.StateVar != null) {
+			if (seedStateVar.HasValue)
+				emu.SetLocal(dispatch.StateVar, new Int32Value(seedStateVar.Value));
+			else if (source.Sources.Count == 0)
+				emu.SetLocal(dispatch.StateVar, Int32Value.Zero);
+			else
+				emu.SetLocal(dispatch.StateVar, Int32Value.CreateUnknown());
+		}
 
 		Int32Value preRemDividend = null;
 
