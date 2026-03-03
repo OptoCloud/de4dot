@@ -219,26 +219,23 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				return null;
 
 			uint transformed = unchecked((uint)arg * info.mulConstant) ^ info.xorConstant;
-			int typeFlag = (int)(transformed >> 30);         // top 2 bits select type
+			// The top 2 bits select the type (string/value/array/default), but the
+			// obfuscator shuffles the mapping per method. Since this is only called
+			// for Method<string>() instantiations, the type flag is always the string
+			// case — just use the bottom 30 bits as the offset directly.
 			int offset = (int)((transformed & 0x3FFFFFFFU) << 2);  // bottom 30 bits * 4 = byte offset
 
-			if (offset < 0 || offset >= dataArray.Length)
+			if (offset < 0 || offset + 4 > dataArray.Length)
 				return null;
 
-			if (typeFlag == 3) {
-				// String: read 4-byte LE length, then UTF-8 string
-				if (offset + 4 > dataArray.Length)
-					return null;
-				int length = dataArray[offset] |
-					(dataArray[offset + 1] << 8) |
-					(dataArray[offset + 2] << 16) |
-					(dataArray[offset + 3] << 24);
-				if (length < 0 || offset + 4 + length > dataArray.Length)
-					return null;
-				return Encoding.UTF8.GetString(dataArray, offset + 4, length);
-			}
-
-			return null;
+			// String: read 4-byte LE length, then UTF-8 string
+			int length = dataArray[offset] |
+				(dataArray[offset + 1] << 8) |
+				(dataArray[offset + 2] << 16) |
+				(dataArray[offset + 3] << 24);
+			if (length < 0 || offset + 4 + length > dataArray.Length)
+				return null;
+			return Encoding.UTF8.GetString(dataArray, offset + 4, length);
 		}
 
 		DecrypterMethod FindDecrypterMethod(MethodDef method) {
