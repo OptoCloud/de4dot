@@ -8,7 +8,7 @@
     <TargetFrameworks Condition=" '$(De4DotNetFramework)' != 'true' ">net8.0</TargetFrameworks>
     <Features>strict</Features>
     <LangVersion>latest</LangVersion>
-    <SignAssembly>true</SignAssembly>
+    <SignAssembly>false</SignAssembly>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)\de4dot.snk</AssemblyOriginatorKeyFile>
