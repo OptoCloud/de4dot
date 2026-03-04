@@ -27,6 +27,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4.xorswitch;
 
 struct DispatchNode {
 	public Block SwitchBlock;
+	public Block HeaderBlock;
 	public Local StateVar;
 	public IList<Block> CaseTargets;
 	public Dictionary<Block, int> BlockToCase;
@@ -42,22 +43,30 @@ static class DispatchDetector {
 		if (switchBlock.Targets == null || switchBlock.Targets.Count < 2)
 			return null;
 
-		var stateVar = FindStateVar(switchBlock, blocks);
+		// Detect split dispatch: if switchBlock has only the switch instruction,
+		// look for a single predecessor that falls through containing the dispatch computation
+		Block headerBlock = null;
+		if (NeedsHeaderBlock(switchBlock)) {
+			headerBlock = FindHeaderBlock(switchBlock);
+		}
+
+		var stateVar = FindStateVar(switchBlock, headerBlock, blocks);
 		// stateVar may be null for stack-based state
 
 		// Validate: emulate with a probe value and check that we get a definite case index
-		if (!ValidateDispatch(switchBlock, stateVar, blocks))
+		if (!ValidateDispatch(switchBlock, headerBlock, stateVar, blocks))
 			return null;
 
-		var blockToCase = BuildBlockToCase(switchBlock);
+		var blockToCase = BuildBlockToCase(switchBlock, headerBlock);
 
 		// Heuristic gate: require that at least some predecessors are case targets,
 		// indicating a state machine (cycle exists) rather than a legitimate switch
-		if (!HasCyclicPredecessors(switchBlock, blockToCase))
+		if (!HasCyclicPredecessors(switchBlock, headerBlock, blockToCase))
 			return null;
 
 		return new DispatchNode {
 			SwitchBlock = switchBlock,
+			HeaderBlock = headerBlock,
 			StateVar = stateVar,
 			CaseTargets = switchBlock.Targets,
 			BlockToCase = blockToCase,
@@ -65,16 +74,69 @@ static class DispatchDetector {
 	}
 
 	/// <summary>
-	///     Finds the state variable by looking for stloc in the switch block (the local that
-	///     stores the XOR result). Also handles the case where a local is loaded as input.
+	///     Returns true if the switch block contains only the switch instruction
+	///     (or only nops + switch) and needs a separate header block for the dispatch computation.
 	/// </summary>
-	static Local FindStateVar(Block switchBlock, Blocks blocks) {
+	static bool NeedsHeaderBlock(Block switchBlock) {
 		var instrs = switchBlock.Instructions;
+		// Check if there's no stloc and the block is very short (just the switch)
+		for (int i = 0; i < instrs.Count - 1; i++) {
+			if (instrs[i].IsStloc())
+				return false;
+			if (instrs[i].IsLdcI4())
+				return false; // has constants — full dispatch block
+		}
+		return true;
+	}
 
+	/// <summary>
+	///     Finds the single predecessor block that falls through to the switch block
+	///     and contains the XOR dispatch computation (xor + rem.un). This handles
+	///     the case where the blocks framework splits the dispatch header from the
+	///     switch instruction because the switch is a branch target.
+	/// </summary>
+	static Block FindHeaderBlock(Block switchBlock) {
+		foreach (var src in switchBlock.Sources) {
+			if (src == switchBlock)
+				continue;
+			if (src.LastInstr.OpCode.Code == Code.Switch)
+				continue;
+			// Must fall through to the switch block
+			if (src.FallThrough != switchBlock)
+				continue;
+			// Must contain the XOR dispatch computation (xor + rem.un)
+			if (!HasXorDispatchPattern(src))
+				continue;
+			return src;
+		}
+		return null;
+	}
+
+	/// <summary>
+	///     Checks if a block contains both xor and rem.un instructions,
+	///     indicating it holds the XOR dispatch computation.
+	/// </summary>
+	static bool HasXorDispatchPattern(Block block) {
+		var instrs = block.Instructions;
+		bool hasXor = false, hasRemUn = false;
+		for (int i = 0; i < instrs.Count; i++) {
+			var code = instrs[i].OpCode.Code;
+			if (code == Code.Xor) hasXor = true;
+			if (code == Code.Rem_Un) hasRemUn = true;
+		}
+		return hasXor && hasRemUn;
+	}
+
+	/// <summary>
+	///     Finds the state variable by looking for stloc in the switch block and/or header
+	///     block (the local that stores the XOR result). Also handles the case where a local
+	///     is loaded as input.
+	/// </summary>
+	static Local FindStateVar(Block switchBlock, Block headerBlock, Blocks blocks) {
 		// Strategy 1: Look for stloc in the switch block — in the pattern
 		// ldc.i4 K; xor; dup; stloc.N; ldc.i4 M; rem.un; switch
 		// the stloc.N local is the state variable
-		foreach (var instr in instrs) {
+		foreach (var instr in switchBlock.Instructions) {
 			if (instr.IsStloc()) {
 				var local = instr.Instruction.GetLocal(blocks.Locals);
 				if (local != null)
@@ -82,7 +144,18 @@ static class DispatchDetector {
 			}
 		}
 
-		// Strategy 2: For each local L, emulate the switch block with L set to a known
+		// Strategy 1b: Look for stloc in the header block
+		if (headerBlock != null) {
+			foreach (var instr in headerBlock.Instructions) {
+				if (instr.IsStloc()) {
+					var local = instr.Instruction.GetLocal(blocks.Locals);
+					if (local != null)
+						return local;
+				}
+			}
+		}
+
+		// Strategy 2: For each local L, emulate the dispatch blocks with L set to a known
 		// probe value. If the top of stack is AllBitsValid, L is the state var.
 		const int probeValue = 0x12345678;
 		var method = blocks.Method;
@@ -92,6 +165,15 @@ static class DispatchDetector {
 			emu.SetLocal(local, new Int32Value(probeValue));
 
 			try {
+				if (headerBlock != null) {
+					var hdrInstrs = headerBlock.Instructions;
+					int hdrEnd = hdrInstrs.Count;
+					if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
+						hdrEnd--;
+					emu.Emulate(hdrInstrs, 0, hdrEnd);
+				}
+
+				var instrs = switchBlock.Instructions;
 				emu.Emulate(instrs, 0, instrs.Count - 1);
 			}
 			catch {
@@ -110,44 +192,71 @@ static class DispatchDetector {
 	}
 
 	/// <summary>
-	///     Determines the number of stack values the switch block expects at entry.
+	///     Determines the number of stack values the dispatch blocks expect at entry.
 	/// </summary>
-	static int ComputeStackInput(Block switchBlock) {
-		// Walk the instructions and track the minimum stack depth
+	static int ComputeStackInput(Block switchBlock, Block headerBlock) {
 		int depth = 0;
 		int minDepth = 0;
+
+		// Process header block first if present
+		if (headerBlock != null) {
+			var hdrInstrs = headerBlock.Instructions;
+			int hdrEnd = hdrInstrs.Count;
+			if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
+				hdrEnd--;
+			for (int i = 0; i < hdrEnd; i++) {
+				var instr = hdrInstrs[i].Instruction;
+				instr.CalculateStackUsage(false, out int pushes, out int pops);
+				if (pops == -1) { depth = 0; continue; }
+				depth -= pops;
+				if (depth < minDepth)
+					minDepth = depth;
+				depth += pushes;
+			}
+		}
+
+		// Process switch block (exclude the switch itself)
 		var instrs = switchBlock.Instructions;
-		for (int i = 0; i < instrs.Count - 1; i++) { // exclude the switch itself
+		for (int i = 0; i < instrs.Count - 1; i++) {
 			var instr = instrs[i].Instruction;
 			instr.CalculateStackUsage(false, out int pushes, out int pops);
-			if (pops == -1) { depth = 0; continue; } // stack-clearing instruction (throw/rethrow)
+			if (pops == -1) { depth = 0; continue; }
 			depth -= pops;
 			if (depth < minDepth)
 				minDepth = depth;
 			depth += pushes;
 		}
-		return -minDepth; // how many items must be pre-pushed
+
+		return -minDepth;
 	}
 
 	/// <summary>
-	///     Emulate the switch block with probe values and verify that TOS
+	///     Emulate the dispatch blocks with probe values and verify that TOS
 	///     produces a known (AllBitsValid) switch index.
 	/// </summary>
-	static bool ValidateDispatch(Block switchBlock, Local stateVar, Blocks blocks) {
+	static bool ValidateDispatch(Block switchBlock, Block headerBlock, Local stateVar, Blocks blocks) {
 		var method = blocks.Method;
-		var instrs = switchBlock.Instructions;
 		var emu = new InstructionEmulator();
 		emu.Initialize(method, false);
 
 		if (stateVar != null)
 			emu.SetLocal(stateVar, new Int32Value(0));
 
-		// Push probe values for any stack inputs the switch block expects
-		int stackInputs = ComputeStackInput(switchBlock);
+		// Push probe values for any stack inputs the dispatch blocks expect
+		int stackInputs = ComputeStackInput(switchBlock, headerBlock);
 		for (int i = 0; i < stackInputs; i++)
 			emu.Push(new Int32Value(0));
 
 		try {
+			if (headerBlock != null) {
+				var hdrInstrs = headerBlock.Instructions;
+				int hdrEnd = hdrInstrs.Count;
+				if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
+					hdrEnd--;
+				emu.Emulate(hdrInstrs, 0, hdrEnd);
+			}
+
+			var instrs = switchBlock.Instructions;
 			emu.Emulate(instrs, 0, instrs.Count - 1);
 		}
 		catch {
@@ -165,7 +274,7 @@ static class DispatchDetector {
 	///     BFS from each case target, mapping reachable blocks to their case index.
 	///     Blocks reachable from multiple case indices are excluded (ambiguous).
 	/// </summary>
-	static Dictionary<Block, int> BuildBlockToCase(Block switchBlock) {
+	static Dictionary<Block, int> BuildBlockToCase(Block switchBlock, Block headerBlock) {
 		var result = new Dictionary<Block, int>();
 		var ambiguous = new HashSet<Block>();
 		var targets = switchBlock.Targets;
@@ -181,7 +290,7 @@ static class DispatchDetector {
 				var block = queue.Dequeue();
 				count++;
 
-				if (block == switchBlock)
+				if (block == switchBlock || block == headerBlock)
 					continue;
 
 				if (ambiguous.Contains(block))
@@ -208,19 +317,27 @@ static class DispatchDetector {
 	}
 
 	/// <summary>
-	///     Check that at least one predecessor of the switch block is also a case target
-	///     or owned by a case, indicating a state machine cycle.
+	///     Check that at least one predecessor of the dispatch (switch block or header block)
+	///     is also a case target or owned by a case, indicating a state machine cycle.
 	/// </summary>
-	static bool HasCyclicPredecessors(Block switchBlock, Dictionary<Block, int> blockToCase) {
+	static bool HasCyclicPredecessors(Block switchBlock, Block headerBlock, Dictionary<Block, int> blockToCase) {
 		foreach (var source in switchBlock.Sources) {
 			if (blockToCase.ContainsKey(source))
 				return true;
 		}
-		// Also check if any case target directly feeds back to the switch
+		if (headerBlock != null) {
+			foreach (var source in headerBlock.Sources) {
+				if (source == switchBlock)
+					continue;
+				if (blockToCase.ContainsKey(source))
+					return true;
+			}
+		}
+		// Also check if any case target directly feeds back to the dispatch
 		if (switchBlock.Targets != null) {
 			foreach (var target in switchBlock.Targets) {
 				foreach (var succ in target.GetTargets()) {
-					if (succ == switchBlock)
+					if (succ == switchBlock || succ == headerBlock)
 						return true;
 				}
 			}

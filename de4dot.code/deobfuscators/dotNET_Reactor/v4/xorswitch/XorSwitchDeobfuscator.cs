@@ -61,6 +61,14 @@ class XorSwitchDeobfuscator : IBlocksDeobfuscator {
 			totalDispatches++;
 			var node = dispatch.Value;
 
+			// Also fold opaque constants in header block sources
+			if (node.HeaderBlock != null) {
+				foreach (var source in new List<Block>(node.HeaderBlock.Sources)) {
+					if (source != block && source != node.HeaderBlock)
+						OpaquePredicateFixer.Fold(source);
+				}
+			}
+
 			// Resolve edges
 			var resolver = new EdgeResolver(node, blocks);
 			var edges = resolver.ResolveAll();

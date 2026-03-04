@@ -44,9 +44,9 @@ static class SwitchRewriter {
 				continue;
 
 			// For conditional predecessors (InstructionsToRemove == 0), retarget the
-			// edge that goes to the switch block
+			// edge that goes to the dispatch block (switch or header)
 			if (edge.InstructionsToRemove == 0 && edge.Predecessor.IsConditionalBranch()) {
-				if (RetargetConditionalEdge(edge.Predecessor, dispatch.SwitchBlock, edge.Target))
+				if (RetargetConditionalEdge(edge.Predecessor, dispatch, edge.Target))
 					applied++;
 				continue;
 			}
@@ -78,19 +78,22 @@ static class SwitchRewriter {
 	}
 
 	/// <summary>
-	///     Retarget a conditional branch edge from the switch block to the resolved target.
+	///     Retarget a conditional branch edge from a dispatch block to the resolved target.
+	///     Checks both SwitchBlock and HeaderBlock.
 	/// </summary>
-	static bool RetargetConditionalEdge(Block predecessor, Block switchBlock, Block target) {
-		// Check fallthrough
-		if (predecessor.FallThrough == switchBlock) {
+	static bool RetargetConditionalEdge(Block predecessor, DispatchNode dispatch, Block target) {
+		// Check fallthrough against both dispatch blocks
+		if (predecessor.FallThrough == dispatch.SwitchBlock ||
+			(dispatch.HeaderBlock != null && predecessor.FallThrough == dispatch.HeaderBlock)) {
 			predecessor.SetNewFallThrough(target);
 			return true;
 		}
 
-		// Check explicit targets
+		// Check explicit targets against both dispatch blocks
 		if (predecessor.Targets != null) {
 			for (int i = 0; i < predecessor.Targets.Count; i++) {
-				if (predecessor.Targets[i] == switchBlock) {
+				if (predecessor.Targets[i] == dispatch.SwitchBlock ||
+					(dispatch.HeaderBlock != null && predecessor.Targets[i] == dispatch.HeaderBlock)) {
 					predecessor.SetNewTarget(i, target);
 					return true;
 				}
@@ -101,8 +104,8 @@ static class SwitchRewriter {
 	}
 
 	/// <summary>
-	///     After rewriting, check each case target. If a target has no remaining sources
-	///     (other than the switch block) and all its predecessors were rewritten, it's dead.
+	///     After rewriting, check each case target and the header block.
+	///     If a block has no remaining sources, it's dead and can be removed.
 	/// </summary>
 	static void CleanupDeadCases(DispatchNode dispatch, List<ResolvedEdge> edges) {
 		if (edges.Count == 0)
@@ -116,6 +119,17 @@ static class SwitchRewriter {
 				catch {
 					// Block may not be in the parent's baseBlocks list
 				}
+			}
+		}
+
+		// Also clean up the header block if it has no remaining sources
+		if (dispatch.HeaderBlock != null && dispatch.HeaderBlock.Sources.Count == 0 &&
+			dispatch.HeaderBlock.Parent != null) {
+			try {
+				dispatch.HeaderBlock.Parent.RemoveGuaranteedDeadBlock(dispatch.HeaderBlock);
+			}
+			catch {
+				// Block may not be in the parent's baseBlocks list
 			}
 		}
 	}

@@ -61,6 +61,80 @@ class EdgeResolver {
 		method = blocks.Method;
 	}
 
+	/// <summary>
+	///     Returns all predecessors of the dispatch (from both SwitchBlock and HeaderBlock).
+	///     Excludes the SwitchBlock and HeaderBlock themselves.
+	/// </summary>
+	List<Block> GetDispatchPredecessors() {
+		var seen = new HashSet<Block>();
+		var result = new List<Block>();
+		seen.Add(dispatch.SwitchBlock);
+		if (dispatch.HeaderBlock != null)
+			seen.Add(dispatch.HeaderBlock);
+
+		foreach (var pred in dispatch.SwitchBlock.Sources) {
+			if (seen.Add(pred))
+				result.Add(pred);
+		}
+		if (dispatch.HeaderBlock != null) {
+			foreach (var pred in dispatch.HeaderBlock.Sources) {
+				if (seen.Add(pred))
+					result.Add(pred);
+			}
+		}
+		return result;
+	}
+
+	/// <summary>
+	///     Checks if a block is part of the dispatch (either the switch block or header block).
+	/// </summary>
+	bool IsDispatchBlock(Block block) {
+		return block == dispatch.SwitchBlock || block == dispatch.HeaderBlock;
+	}
+
+	/// <summary>
+	///     Emulates the dispatch blocks (header + switch computation, excluding the switch itself).
+	///     Handles both the split case (header + switch-only) and the unified case.
+	/// </summary>
+	void EmulateDispatchBlocks(InstructionEmulator emu, Block predecessor, out Int32Value preRemDividend) {
+		preRemDividend = null;
+
+		// Emulate header block if present and the predecessor targets it
+		if (dispatch.HeaderBlock != null && dispatch.HeaderBlock.Sources.Contains(predecessor)) {
+			var hdrInstrs = dispatch.HeaderBlock.Instructions;
+			int hdrEnd = hdrInstrs.Count;
+			if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
+				hdrEnd--;
+			emu.Emulate(hdrInstrs, 0, hdrEnd);
+		}
+
+		// Split switch block emulation at rem.un to capture pre-rem dividend
+		var switchInstrs = dispatch.SwitchBlock.Instructions;
+		int switchIdx = FindSwitchIndex(switchInstrs);
+		if (switchIdx < 0)
+			return;
+
+		int remIdx = FindRemUnIndex(switchInstrs);
+		int emuEnd = switchIdx;
+
+		if (remIdx > 0 && remIdx < emuEnd) {
+			emu.Emulate(switchInstrs, 0, remIdx);
+			if (emu.StackSize() >= 2) {
+				var divisor = emu.Pop();
+				if (emu.Peek() is Int32Value dv)
+					preRemDividend = dv;
+				emu.Push(divisor);
+				if (divisor is Int32Value divIv && divIv.AllBitsValid() &&
+					(uint)divIv.Value != (uint)dispatch.CaseTargets.Count)
+					preRemDividend = null;
+			}
+			emu.Emulate(switchInstrs, remIdx, emuEnd);
+		}
+		else if (emuEnd > 0) {
+			emu.Emulate(switchInstrs, 0, emuEnd);
+		}
+	}
+
 	public List<ResolvedEdge> ResolveAll() {
 		var edges = new List<ResolvedEdge>();
 		var resolved = new HashSet<Block>();
@@ -70,10 +144,8 @@ class EdgeResolver {
 		for (int iter = 0; iter < maxIterations; iter++) {
 			bool foundNew = false;
 
-			foreach (var pred in new List<Block>(dispatch.SwitchBlock.Sources)) {
+			foreach (var pred in GetDispatchPredecessors()) {
 				if (resolved.Contains(pred))
-					continue;
-				if (pred == dispatch.SwitchBlock)
 					continue;
 				if (pred.LastInstr.OpCode.Code == Code.Switch)
 					continue;
@@ -124,10 +196,8 @@ class EdgeResolver {
 					for (int iter = 0; iter < maxPhase2; iter++) {
 						bool foundNew2 = false;
 
-						foreach (var pred in new List<Block>(dispatch.SwitchBlock.Sources)) {
+						foreach (var pred in GetDispatchPredecessors()) {
 							if (resolved.Contains(pred))
-								continue;
-							if (pred == dispatch.SwitchBlock)
 								continue;
 							if (pred.LastInstr.OpCode.Code == Code.Switch)
 								continue;
@@ -165,10 +235,8 @@ class EdgeResolver {
 					for (int iter3 = 0; iter3 < maxPhase3 && phase3Progress; iter3++) {
 						phase3Progress = false;
 
-						foreach (var pred in new List<Block>(dispatch.SwitchBlock.Sources)) {
+						foreach (var pred in GetDispatchPredecessors()) {
 							if (resolved.Contains(pred))
-								continue;
-							if (pred == dispatch.SwitchBlock)
 								continue;
 							if (pred.LastInstr.OpCode.Code == Code.Switch)
 								continue;
@@ -208,10 +276,8 @@ class EdgeResolver {
 					for (int iter4 = 0; iter4 < maxIter4 && progress4; iter4++) {
 						progress4 = false;
 
-						foreach (var passthrough in new List<Block>(dispatch.SwitchBlock.Sources)) {
+						foreach (var passthrough in GetDispatchPredecessors()) {
 							if (resolved.Contains(passthrough))
-								continue;
-							if (passthrough == dispatch.SwitchBlock)
 								continue;
 							if (passthrough.LastInstr.OpCode.Code == Code.Switch)
 								continue;
@@ -223,7 +289,7 @@ class EdgeResolver {
 							foreach (var src in new List<Block>(passthrough.Sources)) {
 								if (indirectResolved.Contains(src))
 									continue;
-								if (src == dispatch.SwitchBlock)
+								if (IsDispatchBlock(src))
 									continue;
 								if (src.LastInstr.OpCode.Code == Code.Switch)
 									continue;
@@ -275,10 +341,8 @@ class EdgeResolver {
 			for (int iter4 = 0; iter4 < maxIter4 && progress4; iter4++) {
 				progress4 = false;
 
-				foreach (var passthrough in new List<Block>(dispatch.SwitchBlock.Sources)) {
+				foreach (var passthrough in GetDispatchPredecessors()) {
 					if (resolved.Contains(passthrough))
-						continue;
-					if (passthrough == dispatch.SwitchBlock)
 						continue;
 					if (passthrough.LastInstr.OpCode.Code == Code.Switch)
 						continue;
@@ -288,7 +352,7 @@ class EdgeResolver {
 					foreach (var src in new List<Block>(passthrough.Sources)) {
 						if (indirectResolved.Contains(src))
 							continue;
-						if (src == dispatch.SwitchBlock)
+						if (IsDispatchBlock(src))
 							continue;
 						if (src.LastInstr.OpCode.Code == Code.Switch)
 							continue;
@@ -308,7 +372,7 @@ class EdgeResolver {
 		}
 
 		// Mark passthrough blocks as resolved if all their sources were handled
-		foreach (var passthrough in new List<Block>(dispatch.SwitchBlock.Sources)) {
+		foreach (var passthrough in GetDispatchPredecessors()) {
 			if (resolved.Contains(passthrough))
 				continue;
 			bool allSourcesResolved = true;
@@ -324,8 +388,8 @@ class EdgeResolver {
 
 		// Compute accurate unresolved count
 		failedCount = 0;
-		foreach (var pred in dispatch.SwitchBlock.Sources) {
-			if (resolved.Contains(pred) || pred == dispatch.SwitchBlock)
+		foreach (var pred in GetDispatchPredecessors()) {
+			if (resolved.Contains(pred))
 				continue;
 			if (pred.LastInstr.OpCode.Code == Code.Switch)
 				continue;
@@ -343,11 +407,11 @@ class EdgeResolver {
 	bool IsConditionalPredecessor(Block block) {
 		if (!block.IsConditionalBranch())
 			return false;
-		if (block.FallThrough == dispatch.SwitchBlock)
+		if (IsDispatchBlock(block.FallThrough))
 			return true;
 		if (block.Targets != null) {
 			foreach (var target in block.Targets) {
-				if (target == dispatch.SwitchBlock)
+				if (IsDispatchBlock(target))
 					return true;
 			}
 		}
@@ -361,6 +425,8 @@ class EdgeResolver {
 	List<Block> BuildEmulationChain(Block predecessor) {
 		var chain = new List<Block> { predecessor };
 		var visited = new HashSet<Block> { predecessor, dispatch.SwitchBlock };
+		if (dispatch.HeaderBlock != null)
+			visited.Add(dispatch.HeaderBlock);
 		var current = predecessor;
 		const int maxChainLength = 20;
 
@@ -394,8 +460,6 @@ class EdgeResolver {
 	}
 
 	ResolvedEdge? TryResolveEdge(Block predecessor, int? seedStateVar = null) {
-		var switchBlock = dispatch.SwitchBlock;
-		var switchInstrs = switchBlock.Instructions;
 		var predInstrs = predecessor.Instructions;
 
 		var chain = BuildEmulationChain(predecessor);
@@ -423,31 +487,7 @@ class EdgeResolver {
 				emu.Emulate(instrs, 0, end);
 			}
 
-			// Split switch block emulation at rem.un to capture pre-rem dividend
-			int switchIdx = FindSwitchIndex(switchInstrs);
-			int remIdx = FindRemUnIndex(switchInstrs);
-			if (switchIdx < 0)
-				return null;
-			int emuEnd = switchIdx; // exclude switch itself — TOS at emuEnd is the case index
-
-			if (remIdx > 0 && remIdx < emuEnd) {
-				emu.Emulate(switchInstrs, 0, remIdx);
-				// Stack before rem.un: ..., dividend, divisor (divisor=M on top)
-				if (emu.StackSize() >= 2) {
-					var divisor = emu.Pop();
-					if (emu.Peek() is Int32Value dv)
-						preRemDividend = dv;
-					emu.Push(divisor);
-					// Sanity check: verify divisor matches CaseTargets.Count
-					if (divisor is Int32Value divIv && divIv.AllBitsValid() &&
-						(uint)divIv.Value != (uint)dispatch.CaseTargets.Count)
-						preRemDividend = null;
-				}
-				emu.Emulate(switchInstrs, remIdx, emuEnd);
-			}
-			else {
-				emu.Emulate(switchInstrs, 0, emuEnd);
-			}
+			EmulateDispatchBlocks(emu, predecessor, out preRemDividend);
 		}
 		catch {
 			return null;
@@ -508,7 +548,6 @@ class EdgeResolver {
 	}
 
 	List<ResolvedEdge> TryResolveConditionalEdge(Block predecessor) {
-		var switchBlock = dispatch.SwitchBlock;
 		var predInstrs = predecessor.Instructions;
 		var edges = new List<ResolvedEdge>();
 
@@ -521,8 +560,8 @@ class EdgeResolver {
 		if (predecessor.Targets != null && predecessor.Targets.Count == 1)
 			branchTarget = predecessor.Targets[0];
 
-		bool fallThroughToSwitch = fallThrough == switchBlock;
-		bool branchToSwitch = branchTarget == switchBlock;
+		bool fallThroughToSwitch = IsDispatchBlock(fallThrough);
+		bool branchToSwitch = branchTarget != null && IsDispatchBlock(branchTarget);
 
 		if (!fallThroughToSwitch && !branchToSwitch)
 			return null;
@@ -540,8 +579,6 @@ class EdgeResolver {
 	}
 
 	ResolvedEdge? TryResolveConditionalPath(Block predecessor) {
-		var switchBlock = dispatch.SwitchBlock;
-		var switchInstrs = switchBlock.Instructions;
 		var predInstrs = predecessor.Instructions;
 
 		var emu = new InstructionEmulator();
@@ -558,7 +595,7 @@ class EdgeResolver {
 		}
 
 		try {
-			emu.Emulate(switchInstrs, 0, switchInstrs.Count - 1);
+			EmulateDispatchBlocks(emu, predecessor, out _);
 		}
 		catch {
 			return null;
@@ -586,11 +623,9 @@ class EdgeResolver {
 
 	/// <summary>
 	///     Resolves an indirect predecessor that reaches the switch through intermediate
-	///     (passthrough) blocks. Emulates [source, intermediates..., switch].
+	///     (passthrough) blocks. Emulates [source, intermediates..., dispatch].
 	/// </summary>
 	ResolvedEdge? TryResolveIndirectEdge(Block source, List<Block> intermediates, int? seedStateVar = null) {
-		var switchBlock = dispatch.SwitchBlock;
-		var switchInstrs = switchBlock.Instructions;
 		var srcInstrs = source.Instructions;
 
 		// Compute exit stack depth of source block to determine cleanup pops needed
@@ -628,29 +663,9 @@ class EdgeResolver {
 				emu.Emulate(midInstrs, 0, midEnd);
 			}
 
-			// Split switch block emulation at rem.un
-			int switchIdx = FindSwitchIndex(switchInstrs);
-			int remIdx = FindRemUnIndex(switchInstrs);
-			if (switchIdx < 0)
-				return null;
-			int emuEnd = switchIdx;
-
-			if (remIdx > 0 && remIdx < emuEnd) {
-				emu.Emulate(switchInstrs, 0, remIdx);
-				if (emu.StackSize() >= 2) {
-					var divisor = emu.Pop();
-					if (emu.Peek() is Int32Value dv)
-						preRemDividend = dv;
-					emu.Push(divisor);
-					if (divisor is Int32Value divIv && divIv.AllBitsValid() &&
-						(uint)divIv.Value != (uint)dispatch.CaseTargets.Count)
-						preRemDividend = null;
-				}
-				emu.Emulate(switchInstrs, remIdx, emuEnd);
-			}
-			else {
-				emu.Emulate(switchInstrs, 0, emuEnd);
-			}
+			// The last intermediate determines the dispatch entry point
+			var lastMid = intermediates[intermediates.Count - 1];
+			EmulateDispatchBlocks(emu, lastMid, out preRemDividend);
 		}
 		catch {
 			return null;
@@ -712,7 +727,7 @@ class EdgeResolver {
 		if (dispatch.StateVar == null)
 			return 0;
 
-		var switchConstants = ExtractSwitchConstants(dispatch.SwitchBlock);
+		var switchConstants = ExtractSwitchConstants();
 		if (switchConstants == null)
 			return 0;
 
@@ -720,7 +735,7 @@ class EdgeResolver {
 		if ((uint)modulus != (uint)dispatch.CaseTargets.Count)
 			return 0;
 
-		var switchSources = new HashSet<Block>(dispatch.SwitchBlock.Sources);
+		var dispatchPreds = new HashSet<Block>(GetDispatchPredecessors());
 
 		// Collect all derived seeds: nextCase → set of nextSeed values
 		var derivedSeeds = new Dictionary<int, HashSet<int>>();
@@ -742,20 +757,20 @@ class EdgeResolver {
 				var block = queue.Dequeue();
 				visitCount++;
 
-				if (block == dispatch.SwitchBlock)
+				if (IsDispatchBlock(block))
 					continue;
 
-				// Check if block is a switch predecessor
-				bool isSwitchPred = switchSources.Contains(block);
-				if (!isSwitchPred) {
-					if (block.FallThrough == dispatch.SwitchBlock)
-						isSwitchPred = true;
+				// Check if block is a dispatch predecessor
+				bool isDispatchPred = dispatchPreds.Contains(block);
+				if (!isDispatchPred) {
+					if (IsDispatchBlock(block.FallThrough))
+						isDispatchPred = true;
 					else if (block.LastInstr.IsBr() && block.Targets != null &&
-						block.Targets.Count == 1 && block.Targets[0] == dispatch.SwitchBlock)
-						isSwitchPred = true;
+						block.Targets.Count == 1 && IsDispatchBlock(block.Targets[0]))
+						isDispatchPred = true;
 				}
 
-				if (isSwitchPred) {
+				if (isDispatchPred) {
 					var affine = ExtractAffineUpdate(block, dispatch.StateVar, blocks.Locals);
 					if (affine != null) {
 						var (mulConst, xorConst) = affine.Value;
@@ -842,18 +857,25 @@ class EdgeResolver {
 	}
 
 	/// <summary>
-	///     Extracts the XOR key (K) and modulus (M) from the switch block's instruction
-	///     pattern: ldloc stateVar; ldc.i4 K; xor; dup; stloc; ldc.i4 M; rem.un; switch
+	///     Extracts the XOR key (K) and modulus (M) from the dispatch blocks' instruction
+	///     pattern: ldloc stateVar; ldc.i4 K; xor; dup; stloc; ldc.i4 M; rem.un; switch.
+	///     Checks both the switch block and header block (if present).
 	/// </summary>
-	static (int xorKey, int modulus)? ExtractSwitchConstants(Block switchBlock) {
-		var instrs = switchBlock.Instructions;
-		int switchIdx = FindSwitchIndex(instrs);
-		if (switchIdx < 0)
-			return null;
+	(int xorKey, int modulus)? ExtractSwitchConstants() {
+		var result = ExtractSwitchConstantsFromBlock(dispatch.SwitchBlock);
+		if (result != null)
+			return result;
+		if (dispatch.HeaderBlock != null)
+			return ExtractSwitchConstantsFromBlock(dispatch.HeaderBlock);
+		return null;
+	}
 
-		// Find rem.un before switch
+	static (int xorKey, int modulus)? ExtractSwitchConstantsFromBlock(Block block) {
+		var instrs = block.Instructions;
+
+		// Find rem.un in this block
 		int remIdx = -1;
-		for (int i = switchIdx - 1; i >= 0; i--) {
+		for (int i = instrs.Count - 1; i >= 0; i--) {
 			if (instrs[i].OpCode.Code == Code.Rem_Un) {
 				remIdx = i;
 				break;
@@ -862,8 +884,8 @@ class EdgeResolver {
 		if (remIdx < 0)
 			return null;
 
-		// Verify no other rem* opcodes between remIdx and switchIdx
-		for (int i = remIdx + 1; i < switchIdx; i++) {
+		// Verify no other rem* opcodes after remIdx
+		for (int i = remIdx + 1; i < instrs.Count; i++) {
 			var code = instrs[i].OpCode.Code;
 			if (code == Code.Rem || code == Code.Rem_Un)
 				return null;
@@ -884,10 +906,6 @@ class EdgeResolver {
 			return null;
 
 		int modulus = instrs[mIdx].GetLdcI4Value();
-
-		// Sanity check: modulus must match switch targets count
-		if (switchBlock.Targets != null && (uint)modulus != (uint)switchBlock.Targets.Count)
-			return null;
 
 		// Find xor before mIdx (skip dup/stloc/nop)
 		int xorIdx = -1;
