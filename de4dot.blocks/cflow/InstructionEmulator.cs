@@ -396,70 +396,6 @@ namespace de4dot.blocks.cflow {
 			case Code.Ldvirtftn:valueStack.Pop(); valueStack.Push(new ObjectValue()); break;
 			case Code.Ldflda:	valueStack.Pop(); valueStack.Push(new ObjectValue()); break;
 
-			case Code.Unbox:
-
-			case Code.Conv_R_Un:Emulate_Conv_R_Un(instr); break;
-			case Code.Conv_R4:	Emulate_Conv_R4(instr); break;
-			case Code.Conv_R8:	Emulate_Conv_R8(instr); break;
-
-			case Code.Arglist:
-			case Code.Beq:
-			case Code.Beq_S:
-			case Code.Bge:
-			case Code.Bge_S:
-			case Code.Bge_Un:
-			case Code.Bge_Un_S:
-			case Code.Bgt:
-			case Code.Bgt_S:
-			case Code.Bgt_Un:
-			case Code.Bgt_Un_S:
-			case Code.Ble:
-			case Code.Ble_S:
-			case Code.Ble_Un:
-			case Code.Ble_Un_S:
-			case Code.Blt:
-			case Code.Blt_S:
-			case Code.Blt_Un:
-			case Code.Blt_Un_S:
-			case Code.Bne_Un:
-			case Code.Bne_Un_S:
-			case Code.Brfalse:
-			case Code.Brfalse_S:
-			case Code.Brtrue:
-			case Code.Brtrue_S:
-			case Code.Br:
-			case Code.Br_S:
-			case Code.Break:
-			case Code.Calli:
-			case Code.Ckfinite:
-			case Code.Constrained:
-			case Code.Conv_I:
-			case Code.Conv_Ovf_I:
-			case Code.Conv_Ovf_I_Un:
-			case Code.Conv_Ovf_U:
-			case Code.Conv_Ovf_U_Un:
-			case Code.Conv_U:
-			case Code.Cpblk:
-			case Code.Cpobj:
-			case Code.Endfilter:
-			case Code.Endfinally:
-			case Code.Initblk:
-			case Code.Initobj:
-			case Code.Jmp:
-			case Code.Ldelema:
-			case Code.Ldelem_I:
-			case Code.Ldelem_R4:
-			case Code.Ldelem_R8:
-			case Code.Ldelem_Ref:
-			case Code.Ldind_I:
-			case Code.Ldind_R4:
-			case Code.Ldind_R8:
-			case Code.Ldind_Ref:
-			case Code.Ldobj:
-			case Code.Leave:
-			case Code.Leave_S:
-			case Code.Localloc:
-			case Code.Mkrefany:
 			case Code.Newarr:	Emulate_Newarr(instr); break;
 			case Code.Nop:		break;
 			case Code.Pop:		valueStack.Pop(); break;
@@ -475,28 +411,12 @@ namespace de4dot.blocks.cflow {
 			case Code.Stelem_Ref:
 				Emulate_Stelem_I4(instr); break;
 
-			case Code.Newobj:
-			case Code.Readonly:
-			case Code.Refanytype:
-			case Code.Refanyval:
-			case Code.Ret:
-			case Code.Rethrow:
-			case Code.Stfld:
-			case Code.Stind_I:
-			case Code.Stind_I1:
-			case Code.Stind_I2:
-			case Code.Stind_I4:
-			case Code.Stind_I8:
-			case Code.Stind_R4:
-			case Code.Stind_R8:
-			case Code.Stind_Ref:
-			case Code.Stobj:
-			case Code.Stsfld:
-			case Code.Switch:
-			case Code.Tailcall:
-			case Code.Throw:
-			case Code.Unaligned:
-			case Code.Volatile:
+			case Code.Unbox:
+
+			case Code.Conv_R_Un:Emulate_Conv_R_Un(instr); break;
+			case Code.Conv_R4:	Emulate_Conv_R4(instr); break;
+			case Code.Conv_R8:	Emulate_Conv_R8(instr); break;
+
 			default:
 				UpdateStack(instr);
 				break;
@@ -537,10 +457,10 @@ namespace de4dot.blocks.cflow {
 				var arr = new List<Value>(arrSize.Value);
 				for (int i = 0; i < arrSize.Value; i++)
 					arr.Add(new UnknownValue());
-				valueStack.Push(new ObjectValue(arr));
+				valueStack.Push(new TrackedArrayValue(arr));
 			}
 			else {
-				valueStack.Push(new ObjectValue());
+				valueStack.Push(new UnknownValue());
 			}
 		}
 
