@@ -461,23 +461,26 @@ namespace de4dot.blocks.cflow {
 			case Code.Localloc:
 			case Code.Mkrefany:
 			case Code.Newarr:	Emulate_Newarr(instr); break;
+			case Code.Nop:		break;
+			case Code.Pop:		valueStack.Pop(); break;
+
+			case Code.Stelem:
+			case Code.Stelem_I:
+			case Code.Stelem_I1:
+			case Code.Stelem_I2:
+			case Code.Stelem_I4:
+			case Code.Stelem_I8:
+			case Code.Stelem_R4:
+			case Code.Stelem_R8:
+			case Code.Stelem_Ref:
+				Emulate_Stelem_I4(instr); break;
+
 			case Code.Newobj:
-			case Code.Nop:
-			case Code.Pop:
 			case Code.Readonly:
 			case Code.Refanytype:
 			case Code.Refanyval:
 			case Code.Ret:
 			case Code.Rethrow:
-			case Code.Stelem:
-			case Code.Stelem_I:
-			case Code.Stelem_I1:
-			case Code.Stelem_I2:
-			case Code.Stelem_I4:	Emulate_Stelem_I4(instr); break;
-			case Code.Stelem_I8:
-			case Code.Stelem_R4:
-			case Code.Stelem_R8:
-			case Code.Stelem_Ref:
 			case Code.Stfld:
 			case Code.Stind_I:
 			case Code.Stind_I1:

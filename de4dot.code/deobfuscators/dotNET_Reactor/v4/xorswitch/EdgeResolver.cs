@@ -295,7 +295,6 @@ class EdgeResolver {
 									continue;
 
 								var intermediates = new List<Block> { passthrough };
-
 								var edge = TryResolveIndirectEdge(src, intermediates);
 
 								if (edge == null) {
@@ -653,6 +652,7 @@ class EdgeResolver {
 			int srcEnd = srcInstrs.Count;
 			if (srcEnd > 0 && srcInstrs[srcEnd - 1].IsBr())
 				srcEnd--;
+
 			emu.Emulate(srcInstrs, 0, srcEnd);
 
 			foreach (var mid in intermediates) {
@@ -808,12 +808,8 @@ class EdgeResolver {
 			int nextSeed = 0;
 			foreach (var s in seedSet) { nextSeed = s; break; }
 
-			if (caseStateVar.TryGetValue(nextCase, out int existing)) {
-				if (existing != nextSeed)
-					Logger.vv("  Phase 5: seed conflict for case {0}: existing={1:X8}, derived={2:X8}",
-						nextCase, existing, nextSeed);
+			if (caseStateVar.TryGetValue(nextCase, out int existing))
 				continue;
-			}
 
 			caseStateVar[nextCase] = nextSeed;
 			allSeeds.Add(nextSeed);

@@ -93,8 +93,8 @@ class XorSwitchDeobfuscator : IBlocksDeobfuscator {
 		}
 
 		if (totalDispatches > 0)
-			Logger.v("  XOR-switch: {0} dispatches, {1} edges resolved, {2} failed, {3} applied, {4} dead cases",
-				totalDispatches, totalResolved, totalFailed, totalApplied, totalDead);
+			Logger.v("  XOR-switch [{5}]: {0} dispatches, {1} edges resolved, {2} failed, {3} applied, {4} dead cases",
+				totalDispatches, totalResolved, totalFailed, totalApplied, totalDead, blocks.Method?.Name ?? "?");
 
 		return modified;
 	}
