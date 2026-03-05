@@ -34,13 +34,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 	/// MethodDef for the handler lookup to work.
 	/// </summary>
 	class GenericConstantInliner : MethodReturnValueInliner {
-		MethodDefAndDeclaringTypeDict<Func<MethodDef, MethodSpec, object[], object>> decrypterMethods = new MethodDefAndDeclaringTypeDict<Func<MethodDef, MethodSpec, object[], object>>();
-		InitializedDataCreator initializedDataCreator;
-		ModuleDefMD module;
+		readonly MethodDefAndDeclaringTypeDict<Func<MethodDef, MethodSpec, object[], object>> _decrypterMethods = new();
+		readonly InitializedDataCreator _initializedDataCreator;
 
 		class MyCallResult : CallResult {
-			public MethodDef resolvedMethod;
-			public MethodSpec gim;
+			public readonly MethodDef resolvedMethod;
+			public readonly MethodSpec gim;
 			public MyCallResult(Block block, int callEndIndex, MethodDef resolvedMethod, MethodSpec gim)
 				: base(block, callEndIndex) {
 				this.resolvedMethod = resolvedMethod;
@@ -48,37 +47,36 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			}
 		}
 
-		public override bool HasHandlers => decrypterMethods.Count != 0;
+		public override bool HasHandlers => _decrypterMethods.Count != 0;
 
 		public GenericConstantInliner(ModuleDefMD module, InitializedDataCreator initializedDataCreator) {
-			this.module = module;
-			this.initializedDataCreator = initializedDataCreator;
+			_initializedDataCreator = initializedDataCreator;
 		}
 
 		public void Add(MethodDef method, Func<MethodDef, MethodSpec, object[], object> handler) {
-			if (method != null)
-				decrypterMethods.Add(method, handler);
+			if (method is not null)
+				_decrypterMethods.Add(method, handler);
 		}
 
 		protected override CallResult CreateCallResult(IMethod method, MethodSpec gim, Block block, int callInstrIndex) {
 			// Only handle non-string generic instantiations; <string> calls go to the string inliner
-			if (gim == null)
+			if (gim is null)
 				return null;
 			if (IsStringInstantiation(gim))
 				return null;
 
 			// Resolve MemberRef → MethodDef for the handler lookup
-			var handler = decrypterMethods.Find(method);
-			MethodDef resolved = method as MethodDef;
-			if (handler == null) {
+			var handler = _decrypterMethods.Find(method);
+			var resolved = method as MethodDef;
+			if (handler is null) {
 				resolved = (method as IMethodDefOrRef)?.ResolveMethodDef();
-				if (resolved == null)
+				if (resolved is null)
 					return null;
-				handler = decrypterMethods.Find(resolved);
-				if (handler == null)
+				handler = _decrypterMethods.Find(resolved);
+				if (handler is null)
 					return null;
 			}
-			if (resolved == null)
+			if (resolved is null)
 				return null;
 
 			return new MyCallResult(block, callInstrIndex, resolved, gim);
@@ -86,16 +84,16 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 
 		static bool IsStringInstantiation(MethodSpec gim) {
 			var gims = gim.GenericInstMethodSig;
-			if (gims == null || gims.GenericArguments.Count != 1)
+			if (gims is null || gims.GenericArguments.Count != 1)
 				return false;
 			var ga = gims.GenericArguments[0];
-			return ga != null && ga.ElementType == ElementType.String;
+			return ga is not null && ga.ElementType == ElementType.String;
 		}
 
 		protected override void InlineAllCalls() {
 			foreach (var tmp in callResults) {
 				var callResult = (MyCallResult)tmp;
-				var handler = decrypterMethods.Find(callResult.resolvedMethod);
+				var handler = _decrypterMethods.Find(callResult.resolvedMethod);
 				callResult.returnValue = handler(callResult.resolvedMethod, callResult.gim, callResult.args);
 			}
 		}
@@ -178,7 +176,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		}
 
 		void InlineArray(Block block, CallResult callResult, int num, ArrayConstant arrayConst) {
-			if (arrayConst.ElementType == null) {
+			if (arrayConst.ElementType is null) {
 				Logger.w("Cannot inline array constant: unknown element type");
 				return;
 			}
@@ -190,7 +188,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				return;
 			}
 
-			initializedDataCreator.AddInitializeArrayCode(block, callResult.callStartIndex, num,
+			_initializedDataCreator.AddInitializeArrayCode(block, callResult.callStartIndex, num,
 				elementType.ToTypeDefOrRef(), arrayConst.Data);
 			RemovePostCallInstructions(block, callResult.callStartIndex + 5); // AddInitializeArrayCode adds 5 instructions
 			Logger.v("Decrypted generic array: {0} bytes, element type {1}", arrayConst.Data.Length, elementType);
@@ -200,7 +198,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// Removes unbox.any and castclass instructions that follow a generic decrypter call,
 		/// since we've already inlined the concrete value.
 		/// </summary>
-		void RemovePostCallInstructions(Block block, int index) {
+		static void RemovePostCallInstructions(Block block, int index) {
 			if (index >= block.Instructions.Count)
 				return;
 			var instr = block.Instructions[index];

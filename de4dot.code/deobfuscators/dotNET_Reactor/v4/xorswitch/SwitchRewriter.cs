@@ -84,16 +84,16 @@ static class SwitchRewriter {
 	static bool RetargetConditionalEdge(Block predecessor, DispatchNode dispatch, Block target) {
 		// Check fallthrough against both dispatch blocks
 		if (predecessor.FallThrough == dispatch.SwitchBlock ||
-			(dispatch.HeaderBlock != null && predecessor.FallThrough == dispatch.HeaderBlock)) {
+			(dispatch.HeaderBlock is not null && predecessor.FallThrough == dispatch.HeaderBlock)) {
 			predecessor.SetNewFallThrough(target);
 			return true;
 		}
 
 		// Check explicit targets against both dispatch blocks
-		if (predecessor.Targets != null) {
+		if (predecessor.Targets is not null) {
 			for (int i = 0; i < predecessor.Targets.Count; i++) {
 				if (predecessor.Targets[i] == dispatch.SwitchBlock ||
-					(dispatch.HeaderBlock != null && predecessor.Targets[i] == dispatch.HeaderBlock)) {
+					(dispatch.HeaderBlock is not null && predecessor.Targets[i] == dispatch.HeaderBlock)) {
 					predecessor.SetNewTarget(i, target);
 					return true;
 				}
@@ -112,7 +112,7 @@ static class SwitchRewriter {
 			return;
 
 		foreach (var caseTarget in dispatch.CaseTargets) {
-			if (caseTarget.Sources.Count == 0 && caseTarget.Parent != null) {
+			if (caseTarget.Sources.Count == 0 && caseTarget.Parent is not null) {
 				try {
 					caseTarget.Parent.RemoveGuaranteedDeadBlock(caseTarget);
 				}
@@ -123,8 +123,7 @@ static class SwitchRewriter {
 		}
 
 		// Also clean up the header block if it has no remaining sources
-		if (dispatch.HeaderBlock != null && dispatch.HeaderBlock.Sources.Count == 0 &&
-			dispatch.HeaderBlock.Parent != null) {
+		if (dispatch.HeaderBlock is { Sources.Count: 0, Parent: not null }) {
 			try {
 				dispatch.HeaderBlock.Parent.RemoveGuaranteedDeadBlock(dispatch.HeaderBlock);
 			}

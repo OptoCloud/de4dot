@@ -18,6 +18,7 @@
 */
 
 using System.Collections.Generic;
+using System.Linq;
 using de4dot.blocks;
 using de4dot.blocks.cflow;
 using dnlib.DotNet.Emit;
@@ -29,11 +30,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4.xorswitch;
 ///     Unified CFG-driven approach using abstract interpretation instead of pattern matching.
 /// </summary>
 class XorSwitchDeobfuscator : IBlocksDeobfuscator {
-	Blocks blocks;
+	Blocks _blocks;
 
 	public bool ExecuteIfNotModified => false;
 
-	public void DeobfuscateBegin(Blocks blocks) => this.blocks = blocks;
+	public void DeobfuscateBegin(Blocks blocks) => this._blocks = blocks;
 
 	public bool Deobfuscate(List<Block> allBlocks) {
 		bool modified = false;
@@ -54,23 +55,23 @@ class XorSwitchDeobfuscator : IBlocksDeobfuscator {
 			}
 
 			// Detect dispatch
-			var dispatch = DispatchDetector.TryDetect(block, blocks);
-			if (dispatch == null)
+			var dispatch = DispatchDetector.TryDetect(block, _blocks);
+			if (dispatch is null)
 				continue;
 
 			totalDispatches++;
 			var node = dispatch.Value;
 
 			// Also fold opaque constants in header block sources
-			if (node.HeaderBlock != null) {
-				foreach (var source in new List<Block>(node.HeaderBlock.Sources)) {
+			if (node.HeaderBlock is not null) {
+				foreach (var source in node.HeaderBlock.Sources) {
 					if (source != block && source != node.HeaderBlock)
 						OpaquePredicateFixer.Fold(source);
 				}
 			}
 
 			// Resolve edges
-			var resolver = new EdgeResolver(node, blocks);
+			var resolver = new EdgeResolver(node, _blocks);
 			var edges = resolver.ResolveAll();
 			totalResolved += resolver.ResolvedCount;
 			totalFailed += resolver.FailedCount;
@@ -86,15 +87,12 @@ class XorSwitchDeobfuscator : IBlocksDeobfuscator {
 				modified = true;
 
 			// Count dead cases
-			foreach (var caseTarget in node.CaseTargets) {
-				if (caseTarget.Sources.Count == 0)
-					totalDead++;
-			}
+			totalDead += node.CaseTargets.Count(caseTarget => caseTarget.Sources.Count == 0);
 		}
 
 		if (totalDispatches > 0)
 			Logger.v("  XOR-switch [{5}]: {0} dispatches, {1} edges resolved, {2} failed, {3} applied, {4} dead cases",
-				totalDispatches, totalResolved, totalFailed, totalApplied, totalDead, blocks.Method?.Name ?? "?");
+				totalDispatches, totalResolved, totalFailed, totalApplied, totalDead, _blocks.Method?.Name ?? "?");
 
 		return modified;
 	}

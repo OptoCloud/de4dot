@@ -18,6 +18,7 @@
 */
 
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.RegularExpressions;
 using dnlib.PE;
 using dnlib.DotNet;
@@ -90,7 +91,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			};
 	}
 
-	class Deobfuscator : DeobfuscatorBase {
+	sealed class Deobfuscator : DeobfuscatorBase {
 		Options options;
 		string obfuscatorName = DeobfuscatorInfo.THE_NAME;
 
@@ -129,7 +130,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		public override string Type => DeobfuscatorInfo.THE_TYPE;
 		public override string TypeLong => DeobfuscatorInfo.THE_NAME + " 4.x";
 		public override string Name => obfuscatorName;
-		protected override bool CanInlineMethods => startedDeobfuscating ? options.InlineMethods : true;
+		protected override bool CanInlineMethods => !startedDeobfuscating || options.InlineMethods;
 
 		/// <summary>
 		/// Returns per-method block deobfuscators run during control flow deobfuscation.
@@ -137,17 +138,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// then XorSwitchDeobfuscator (v6.x XOR-keyed switch state machines), then
 		/// MethodCallInliner (inline small helper methods after cflow is resolved).
 		/// </summary>
-		public override IEnumerable<IBlocksDeobfuscator> BlocksDeobfuscators {
-			get {
-				var list = new List<IBlocksDeobfuscator>();
-				if (CanInlineMethods) {
-					list.Add(new DotNetReactorCflowDeobfuscator());
-					list.Add(new xorswitch.XorSwitchDeobfuscator());
-					list.Add(new MethodCallInliner(false));
-				}
-				return list;
-			}
-		}
+		public override IEnumerable<IBlocksDeobfuscator> BlocksDeobfuscators =>
+			CanInlineMethods ? [
+				new DotNetReactorCflowDeobfuscator(),
+				new xorswitch.XorSwitchDeobfuscator(),
+				new MethodCallInliner(false)
+			] : [];
 
 		public Deobfuscator(Options options)
 			: base(options) {
@@ -171,8 +167,6 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return data;
 		}
 
-		public override void Initialize(ModuleDefMD module) => base.Initialize(module);
-
 		static Regex isRandomName = new Regex(@"^[A-Z]{30,40}$");
 		static Regex isRandomNameMembers = new Regex(@"^(?:[a-zA-Z0-9]{9,11}|[a-zA-Z0-9]{18,20})$");	// methods, fields, props, events
 		static Regex isRandomNameTypes = new Regex(@"^[a-zA-Z0-9]{18,20}(?:`\d+)?$");	// types, namespaces
@@ -192,7 +186,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		public override bool IsValidNamespaceName(string ns) {
 			if (ns == null)
 				return false;
-			if (ns.Contains("."))
+			if (ns.Contains('.'))
 				return base.IsValidNamespaceName(ns);
 			return CheckValidName(ns, isRandomNameTypes);
 		}
@@ -401,7 +395,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				if (call.OpCode.Code != Code.Call)
 					continue;
 				var calledMethod = call.Operand as MemberRef;
-				if (calledMethod == null || calledMethod.FullName != "System.Int32 System.IntPtr::get_Size()")
+				if (calledMethod is not { FullName: "System.Int32 System.IntPtr::get_Size()" })
 					continue;
 
 				count++;
@@ -409,13 +403,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			return count;
 		}
 
-		static bool FindString(MethodDef method, string s) {
-			foreach (var cs in DotNetUtils.GetCodeStrings(method)) {
-				if (cs == s)
-					return true;
-			}
-			return false;
-		}
+		static bool FindString(MethodDef method, string s) => DotNetUtils.GetCodeStrings(method).Any(cs => cs == s);
 
 		public override bool GetDecryptedModule(int count, ref byte[] newFileData, ref DumpedMethods dumpedMethods) {
 			if (count != 0)
@@ -454,8 +442,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		}
 
 		void FreePEImage() {
-			if (peImage != null)
-				peImage.Dispose();
+			peImage?.Dispose();
 			peImage = null;
 		}
 
@@ -546,21 +533,15 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			emptyClass = new EmptyClass(module);
 
 			if (options.DecryptBools) {
-				booleanValueInliner.Add(booleanDecrypter.Method, (method, gim, args) => {
-					return booleanDecrypter.Decrypt((int)args[0]);
-				});
+				booleanValueInliner.Add(booleanDecrypter.Method, (_, _, args) => booleanDecrypter.Decrypt((int)args[0]));
 			}
 
 			if (decryptStrings) {
 				foreach (var info in stringDecrypter.DecrypterInfos) {
-					staticStringInliner.Add(info.method, (method2, gim, args) => {
-						return stringDecrypter.Decrypt(method2, (int)args[0]);
-					});
+					staticStringInliner.Add(info.method, (method2, _, args) => stringDecrypter.Decrypt(method2, (int)args[0]));
 				}
 				if (stringDecrypter.OtherStringDecrypter != null) {
-					staticStringInliner.Add(stringDecrypter.OtherStringDecrypter, (method2, gim, args) => {
-						return stringDecrypter.Decrypt((string)args[0]);
-					});
+					staticStringInliner.Add(stringDecrypter.OtherStringDecrypter, (_, _, args) => stringDecrypter.Decrypt((string)args[0]));
 				}
 			}
 			// Register generic decrypter methods with both string and constant inliners.
@@ -569,12 +550,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			if (genericConstantDecrypter.Initialized) {
 				genericConstantInliner = new GenericConstantInliner(module, initializedDataCreator);
 				foreach (var dm in genericConstantDecrypter.DecrypterMethods) {
-					staticStringInliner.Add(dm.method, (method2, gim, args) => {
-						return genericConstantDecrypter.Decrypt(method2, (int)args[0]);
-					});
-					genericConstantInliner.Add(dm.method, (method2, gim, args) => {
-						return genericConstantDecrypter.DecryptConstant(method2, gim, (int)args[0]);
-					});
+					staticStringInliner.Add(dm.method, (method2, _, args) => genericConstantDecrypter.Decrypt(method2, (int)args[0]));
+					genericConstantInliner.Add(dm.method, (method2, gim, args) => genericConstantDecrypter.DecryptConstant(method2, gim, (int)args[0]));
 				}
 			}
 			DeobfuscatedFile.StringDecryptersAdded();
@@ -754,13 +731,10 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// and by the pipeline to know which methods should be treated as string decrypters.
 		/// </summary>
 		public override IEnumerable<int> GetStringDecrypterMethods() {
-			var list = new List<int>();
-			foreach (var info in stringDecrypter.DecrypterInfos)
-				list.Add(info.method.MDToken.ToInt32());
+			var list = stringDecrypter.DecrypterInfos.Select(info => info.method.MDToken.ToInt32()).ToList();
 			if (stringDecrypter.OtherStringDecrypter != null)
 				list.Add(stringDecrypter.OtherStringDecrypter.MDToken.ToInt32());
-			foreach (var dm in genericConstantDecrypter.DecrypterMethods)
-				list.Add(dm.method.MDToken.ToInt32());
+			list.AddRange(genericConstantDecrypter.DecrypterMethods.Select(dm => dm.method.MDToken.ToInt32()));
 			return list;
 		}
 

@@ -19,7 +19,6 @@
 
 using System.Collections.Generic;
 using de4dot.blocks;
-using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 
 namespace de4dot.code.deobfuscators.dotNET_Reactor.v4.xorswitch;
@@ -35,7 +34,7 @@ struct StateUpdateBoundary {
 /// </summary>
 static class StateUpdateFinder {
 	public static StateUpdateBoundary Find(Block block, DispatchNode dispatch, IList<Local> allLocals) {
-		if (dispatch.StateVar != null) {
+		if (dispatch.StateVar is not null) {
 			var result = FindForLocalVar(block, dispatch.StateVar, allLocals);
 			if (result.Found)
 				return result;

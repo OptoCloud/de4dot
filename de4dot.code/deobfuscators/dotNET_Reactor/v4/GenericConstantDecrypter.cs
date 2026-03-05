@@ -21,6 +21,7 @@ using System;
 using System.Text;
 using System.Reflection;
 using System.Collections.Generic;
+using System.Linq;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 using de4dot.blocks;
@@ -41,10 +42,10 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 	/// calls reveal the array flag, etc.
 	/// </summary>
 	class GenericConstantDecrypter {
-		ModuleDefMD module;
-		byte[] dataArray;         // runtime-initialized data extracted via dynamic loading
-		FieldDef dataField;       // the byte[] field on <Module> that holds encrypted data
-		List<DecrypterMethod> decrypterMethods = new List<DecrypterMethod>();
+		readonly ModuleDefMD _module;
+		byte[] _dataArray;         // runtime-initialized data extracted via dynamic loading
+		FieldDef _dataField;       // the byte[] field on <Module> that holds encrypted data
+		readonly List<DecrypterMethod> _decrypterMethods = [];
 
 		public class DecrypterMethod {
 			public MethodDef method;
@@ -56,11 +57,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			public int defaultFlag = -1; // type flag value for default(T) case
 		}
 
-		public bool Detected => decrypterMethods.Count > 0;
-		public bool Initialized => dataArray != null;
-		public IEnumerable<DecrypterMethod> DecrypterMethods => decrypterMethods;
+		public bool Detected => _decrypterMethods.Count > 0;
+		public bool Initialized => _dataArray is not null;
+		public IEnumerable<DecrypterMethod> DecrypterMethods => _decrypterMethods;
 
-		public GenericConstantDecrypter(ModuleDefMD module) => this.module = module;
+		public GenericConstantDecrypter(ModuleDefMD module) => _module = module;
 
 		/// <summary>
 		/// Scans all module types for generic constant decrypter methods matching
@@ -69,7 +70,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// the type flag mapping from the IL switch.
 		/// </summary>
 		public void Find() {
-			foreach (var type in module.Types) {
+			foreach (var type in _module.Types) {
 				foreach (var method in type.Methods) {
 					if (!method.IsStatic || !method.HasBody)
 						continue;
@@ -77,7 +78,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 					if (!method.HasGenericParameters || method.GenericParameters.Count != 1)
 						continue;
 					var sig = method.MethodSig;
-					if (sig == null || sig.Params.Count != 1)
+					if (sig is null || sig.Params.Count != 1)
 						continue;
 					// Single int32 argument
 					if (sig.Params[0].GetElementType() != ElementType.I4)
@@ -92,30 +93,31 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 							mulConstant = mul,
 							xorConstant = xor,
 						};
-						decrypterMethods.Add(dm);
-						if (dataField == null && field != null)
-							dataField = field;
+						_decrypterMethods.Add(dm);
+						if (_dataField is null && field is not null)
+							_dataField = field;
 					}
 				}
 			}
 
-			if (decrypterMethods.Count > 0)
-				Logger.v("Found {0} generic constant decrypter method(s)", decrypterMethods.Count);
+			if (_decrypterMethods.Count > 0)
+				Logger.v("Found {0} generic constant decrypter method(s)", _decrypterMethods.Count);
 		}
 
 		public void Initialize(byte[] fileData) {
-			if (dataField == null || decrypterMethods.Count == 0)
+			if (_dataField is null || _decrypterMethods.Count == 0)
 				return;
 
 			// Try dynamic loading: load the assembly, trigger .cctor, read the field
-			dataArray = TryDynamicExtract(fileData);
+			_dataArray = TryDynamicExtract(fileData);
 
-			if (dataArray != null) {
-				Logger.v("Generic constant decrypter: data size: {0}", dataArray.Length);
-				DetectTypeFlagsFromCallSites();
-			}
-			else
+			if (_dataArray is null) {
 				Logger.w("Could not extract generic constant decrypter data array");
+				return;
+			}
+			
+			Logger.v("Generic constant decrypter: data size: {0}", _dataArray.Length);
+			DetectTypeFlagsFromCallSites();
 		}
 
 		/// <summary>
@@ -132,12 +134,10 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				// For <Module> (global type), use Module.ResolveField() or Module.GetFields()
 				// to access module-level fields directly
 				try {
-					var field = mod.ResolveField(dataField.MDToken.ToInt32());
-					if (field != null) {
-						var value = field.GetValue(null);
-						if (value is byte[] { Length: > 0 } bytes)
-							return (byte[])bytes.Clone();
-					}
+					var field = mod.ResolveField(_dataField.MDToken.ToInt32());
+					var value = field?.GetValue(null);
+					if (value is byte[] { Length: > 0 } bytes)
+						return (byte[])bytes.Clone();
 				}
 				catch (Exception ex) {
 					Logger.v("ResolveField failed: {0}", ex.Message);
@@ -153,7 +153,9 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 						if (value is byte[] { Length: > 0 } bytes)
 							return (byte[])bytes.Clone();
 					}
-					catch { }
+					catch {
+						// ignored
+					}
 				}
 			}
 			catch (Exception ex) {
@@ -199,10 +201,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				xor = (uint)instrs[i + 3].GetLdcI4Value();
 
 				// Find the byte array field (ldsfld of byte[])
-				for (int j = 0; j < instrs.Count; j++) {
-					if (instrs[j].OpCode.Code != Code.Ldsfld)
+				foreach (var t in instrs)
+				{
+					if (t.OpCode.Code != Code.Ldsfld)
 						continue;
-					if (instrs[j].Operand is FieldDef { FieldType.FullName: "System.Byte[]" } fd) {
+					
+					if (t.Operand is FieldDef { FieldType.FullName: "System.Byte[]" } fd) {
 						byteArrayField = fd;
 						break;
 					}
@@ -227,17 +231,17 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		void DetectTypeFlagsFromCallSites() {
 			// Build a lookup: MethodDef token → DecrypterMethod
 			var tokenToDecrypter = new Dictionary<int, DecrypterMethod>();
-			foreach (var dm in decrypterMethods)
+			foreach (var dm in _decrypterMethods)
 				tokenToDecrypter[dm.method.MDToken.ToInt32()] = dm;
 
 			// Per-method: type flag → category observed
 			// category: 0=unknown, 1=string, 2=array, 3=value
 			var flagCategories = new Dictionary<DecrypterMethod, Dictionary<int, int>>();
-			foreach (var dm in decrypterMethods)
+			foreach (var dm in _decrypterMethods)
 				flagCategories[dm] = new Dictionary<int, int>();
 
 			// Scan all method bodies for MethodSpec calls to our decrypter methods
-			foreach (var type in module.GetTypes()) {
+			foreach (var type in _module.GetTypes()) {
 				foreach (var method in type.Methods) {
 					if (!method.HasBody)
 						continue;
@@ -250,14 +254,14 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 
 						// Resolve the MethodSpec's underlying method to match our decrypter
 						var resolved = (ms.Method as IMethodDefOrRef)?.ResolveMethodDef();
-						if (resolved == null)
+						if (resolved is null)
 							continue;
 						if (!tokenToDecrypter.TryGetValue(resolved.MDToken.ToInt32(), out var dm))
 							continue;
 
 						// Extract the generic type argument
 						var gims = ms.GenericInstMethodSig;
-						if (gims == null || gims.GenericArguments.Count != 1)
+						if (gims is null || gims.GenericArguments.Count != 1)
 							continue;
 						var typeArg = gims.GenericArguments[0];
 						int category = ClassifyTypeArg(typeArg);
@@ -281,7 +285,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			}
 
 			// Assign detected flags to each DecrypterMethod
-			foreach (var dm in decrypterMethods) {
+			foreach (var dm in _decrypterMethods) {
 				var cats = flagCategories[dm];
 				foreach (var kv in cats) {
 					switch (kv.Value) {
@@ -305,7 +309,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// 1=string, 2=array (SZArray), 3=scalar value, 0=unknown
 		/// </summary>
 		static int ClassifyTypeArg(TypeSig typeSig) {
-			if (typeSig == null)
+			if (typeSig is null)
 				return 0;
 			if (typeSig.ElementType == ElementType.String)
 				return 1;
@@ -369,14 +373,14 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			var flagSamples = new Dictionary<int, List<(int arg, TypeSig typeArg)>>();
 			for (int f = 0; f < 4; f++) {
 				if (!usedFlags.Contains(f))
-					flagSamples[f] = new List<(int, TypeSig)>();
+					flagSamples[f] = [];
 			}
 
 			if (flagSamples.Count == 0)
 				return;
 
 			// Scan for call sites to this specific method to find sample args for unknown flags
-			foreach (var type in module.GetTypes()) {
+			foreach (var type in _module.GetTypes()) {
 				foreach (var method in type.Methods) {
 					if (!method.HasBody)
 						continue;
@@ -386,7 +390,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 							continue;
 						if (instrs[i].Operand is not MethodSpec ms)
 							continue;
-						var resolved = (ms.Method as IMethodDefOrRef)?.ResolveMethodDef();
+						var resolved = ms.Method?.ResolveMethodDef();
 						if (resolved != dm.method)
 							continue;
 						if (!instrs[i - 1].IsLdcI4())
@@ -399,7 +403,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 						if (flagSamples.TryGetValue(typeFlag, out var samples)) {
 							var gims = ms.GenericInstMethodSig;
 							TypeSig typeArg = null;
-							if (gims != null && gims.GenericArguments.Count == 1)
+							if (gims is not null && gims.GenericArguments.Count == 1)
 								typeArg = gims.GenericArguments[0];
 							samples.Add((arg, typeArg));
 						}
@@ -444,28 +448,28 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// 1=string (valid UTF-8 length prefix), 2=array (valid total+count header), 3=value
 		/// </summary>
 		int ProbeDataCategory(int offset) {
-			if (offset < 0 || offset + 8 > dataArray.Length)
+			if (offset < 0 || offset + 8 > _dataArray.Length)
 				return 0;
 
 			// Read first 4 bytes as a potential length
-			int len = dataArray[offset] |
-				(dataArray[offset + 1] << 8) |
-				(dataArray[offset + 2] << 16) |
-				(dataArray[offset + 3] << 24);
+			int len = _dataArray[offset] |
+				(_dataArray[offset + 1] << 8) |
+				(_dataArray[offset + 2] << 16) |
+				(_dataArray[offset + 3] << 24);
 
 			// Check if it could be an array header: totalLen + arrayCount
-			int arrayCount = dataArray[offset + 4] |
-				(dataArray[offset + 5] << 8) |
-				(dataArray[offset + 6] << 16) |
-				(dataArray[offset + 7] << 24);
+			int arrayCount = _dataArray[offset + 4] |
+				(_dataArray[offset + 5] << 8) |
+				(_dataArray[offset + 6] << 16) |
+				(_dataArray[offset + 7] << 24);
 
 			// Array: totalLen > 0, arrayCount > 0, totalLen fits in data, and
 			// totalLen should be roughly arrayCount * elementSize
-			if (len > 0 && arrayCount > 0 && offset + 8 + len <= dataArray.Length)
+			if (len > 0 && arrayCount > 0 && offset + 8 + len <= _dataArray.Length)
 				return 2; // likely array
 
 			// String: length prefix + valid UTF-8 data
-			if (len >= 0 && len < 10000 && offset + 4 + len <= dataArray.Length)
+			if (len is >= 0 and < 10000 && offset + 4 + len <= _dataArray.Length)
 				return 1; // likely string
 
 			return 3; // likely scalar value
@@ -493,7 +497,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// </summary>
 		public object DecryptConstant(MethodDef method, MethodSpec gim, int arg) {
 			var info = FindDecrypterMethod(method);
-			if (info == null || dataArray == null)
+			if (info is null || _dataArray is null)
 				return null;
 
 			uint transformed = unchecked((uint)arg * info.mulConstant) ^ info.xorConstant;
@@ -515,7 +519,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// </summary>
 		public string Decrypt(MethodDef method, int arg) {
 			var info = FindDecrypterMethod(method);
-			if (info == null || dataArray == null)
+			if (info is null || _dataArray is null)
 				return null;
 
 			uint transformed = unchecked((uint)arg * info.mulConstant) ^ info.xorConstant;
@@ -524,59 +528,42 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		}
 
 		string DecryptString(int offset) {
-			if (offset < 0 || offset + 4 > dataArray.Length)
+			if (offset < 0 || offset + 4 > _dataArray.Length)
 				return null;
 
-			int length = dataArray[offset] |
-				(dataArray[offset + 1] << 8) |
-				(dataArray[offset + 2] << 16) |
-				(dataArray[offset + 3] << 24);
-			if (length < 0 || offset + 4 + length > dataArray.Length)
+			int length = _dataArray[offset] |
+				(_dataArray[offset + 1] << 8) |
+				(_dataArray[offset + 2] << 16) |
+				(_dataArray[offset + 3] << 24);
+			if (length < 0 || offset + 4 + length > _dataArray.Length)
 				return null;
-			return Encoding.UTF8.GetString(dataArray, offset + 4, length);
+			return Encoding.UTF8.GetString(_dataArray, offset + 4, length);
 		}
 
 		object DecryptValue(int offset, MethodSpec gim) {
 			// Scalar value: raw bytes at offset, size determined by the type argument
 			var elementType = GetElementTypeFromGim(gim);
 			int size = GetElementSize(elementType);
-			if (size <= 0 || offset < 0 || offset + size > dataArray.Length)
+			if (size <= 0 || offset < 0 || offset + size > _dataArray.Length)
 				return null;
 
-			switch (elementType) {
-			case ElementType.Boolean:
-				return dataArray[offset] != 0;
-			case ElementType.I1:
-				return (sbyte)dataArray[offset];
-			case ElementType.U1:
-				return dataArray[offset];
-			case ElementType.I2:
-				return (short)(dataArray[offset] | (dataArray[offset + 1] << 8));
-			case ElementType.U2:
-				return (ushort)(dataArray[offset] | (dataArray[offset + 1] << 8));
-			case ElementType.Char:
-				return (char)(dataArray[offset] | (dataArray[offset + 1] << 8));
-			case ElementType.I4:
-				return dataArray[offset] |
-					(dataArray[offset + 1] << 8) |
-					(dataArray[offset + 2] << 16) |
-					(dataArray[offset + 3] << 24);
-			case ElementType.U4:
-				return (uint)(dataArray[offset] |
-					(dataArray[offset + 1] << 8) |
-					(dataArray[offset + 2] << 16) |
-					(dataArray[offset + 3] << 24));
-			case ElementType.I8:
-				return BitConverter.ToInt64(dataArray, offset);
-			case ElementType.U8:
-				return BitConverter.ToUInt64(dataArray, offset);
-			case ElementType.R4:
-				return BitConverter.ToSingle(dataArray, offset);
-			case ElementType.R8:
-				return BitConverter.ToDouble(dataArray, offset);
-			default:
-				return null;
-			}
+			return elementType switch {
+				ElementType.Boolean => _dataArray[offset] != 0,
+				ElementType.I1 => (sbyte)_dataArray[offset],
+				ElementType.U1 => _dataArray[offset],
+				ElementType.I2 => (short)(_dataArray[offset] | (_dataArray[offset + 1] << 8)),
+				ElementType.U2 => (ushort)(_dataArray[offset] | (_dataArray[offset + 1] << 8)),
+				ElementType.Char => (char)(_dataArray[offset] | (_dataArray[offset + 1] << 8)),
+				ElementType.I4 => _dataArray[offset] | (_dataArray[offset + 1] << 8) | (_dataArray[offset + 2] << 16) |
+				                  (_dataArray[offset + 3] << 24),
+				ElementType.U4 => (uint)(_dataArray[offset] | (_dataArray[offset + 1] << 8) |
+				                         (_dataArray[offset + 2] << 16) | (_dataArray[offset + 3] << 24)),
+				ElementType.I8 => BitConverter.ToInt64(_dataArray, offset),
+				ElementType.U8 => BitConverter.ToUInt64(_dataArray, offset),
+				ElementType.R4 => BitConverter.ToSingle(_dataArray, offset),
+				ElementType.R8 => BitConverter.ToDouble(_dataArray, offset),
+				_ => null
+			};
 		}
 
 		/// <summary>
@@ -588,25 +575,25 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// which the inliner can use with InitializedDataCreator.
 		/// </summary>
 		object DecryptArray(int offset, MethodSpec gim) {
-			if (offset < 0 || offset + 8 > dataArray.Length)
+			if (offset < 0 || offset + 8 > _dataArray.Length)
 				return null;
 
-			int totalLen = dataArray[offset] |
-				(dataArray[offset + 1] << 8) |
-				(dataArray[offset + 2] << 16) |
-				(dataArray[offset + 3] << 24);
-			int arrayLen = dataArray[offset + 4] |
-				(dataArray[offset + 5] << 8) |
-				(dataArray[offset + 6] << 16) |
-				(dataArray[offset + 7] << 24);
+			int totalLen = _dataArray[offset] |
+				(_dataArray[offset + 1] << 8) |
+				(_dataArray[offset + 2] << 16) |
+				(_dataArray[offset + 3] << 24);
+			int arrayLen = _dataArray[offset + 4] |
+				(_dataArray[offset + 5] << 8) |
+				(_dataArray[offset + 6] << 16) |
+				(_dataArray[offset + 7] << 24);
 
-			if (totalLen < 0 || offset + 8 + totalLen > dataArray.Length)
+			if (totalLen < 0 || offset + 8 + totalLen > _dataArray.Length)
 				return null;
 			if (arrayLen < 0)
 				return null;
 
 			var rawData = new byte[totalLen];
-			Array.Copy(dataArray, offset + 8, rawData, 0, totalLen);
+			Array.Copy(_dataArray, offset + 8, rawData, 0, totalLen);
 
 			// Get the element type from the generic instantiation (e.g. int[] → int)
 			var arrayElementType = GetArrayElementTypeFromGim(gim);
@@ -614,10 +601,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		}
 
 		ElementType GetElementTypeFromGim(MethodSpec gim) {
-			if (gim == null)
-				return ElementType.End;
-			var gims = gim.GenericInstMethodSig;
-			if (gims == null || gims.GenericArguments.Count != 1)
+			var gims = gim?.GenericInstMethodSig;
+			if (gims?.GenericArguments.Count is not 1)
 				return ElementType.End;
 			return gims.GenericArguments[0].ElementType;
 		}
@@ -627,7 +612,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		/// </summary>
 		TypeSig GetArrayElementTypeFromGim(MethodSpec gim) {
 			var gims = gim?.GenericInstMethodSig;
-			if (gims == null || gims.GenericArguments.Count != 1)
+			if (gims is null || gims.GenericArguments.Count != 1)
 				return null;
 			var typeSig = gims.GenericArguments[0];
 			if (typeSig is SZArraySig szArray)
@@ -644,13 +629,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				_ => -1
 			};
 
-		DecrypterMethod FindDecrypterMethod(MethodDef method) {
-			foreach (var dm in decrypterMethods) {
-				if (dm.method == method)
-					return dm;
-			}
-			return null;
-		}
+		DecrypterMethod FindDecrypterMethod(MethodDef method) => _decrypterMethods.FirstOrDefault(dm => dm.method == method);
 	}
 
 	/// <summary>

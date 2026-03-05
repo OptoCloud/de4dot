@@ -54,7 +54,6 @@ namespace de4dot.code.deobfuscators {
 		MethodCallRemover methodCallRemover = new MethodCallRemover();
 		byte[] moduleBytes;
 		protected InitializedDataCreator initializedDataCreator;
-		bool keepTypes;
 		MetadataFlags? mdFlags;
 		Dictionary<object, bool> objectsThatMustBeKept = new Dictionary<object, bool>();
 
@@ -82,10 +81,7 @@ namespace de4dot.code.deobfuscators {
 		public abstract string Name { get; }
 		protected virtual bool CanInlineMethods => false;
 
-		protected bool KeepTypes {
-			get => keepTypes;
-			set => keepTypes = value;
-		}
+		protected bool KeepTypes { get; set; }
 
 		protected bool CanRemoveTypes => !Operations.KeepObfuscatorTypes && !KeepTypes;
 		protected bool CanRemoveStringDecrypterType => Operations.DecryptStrings != OpDecryptString.None && staticStringInliner.InlinedAllCalls;
@@ -114,7 +110,7 @@ namespace de4dot.code.deobfuscators {
 		}
 
 		protected void PreserveTokensAndTypes() {
-			keepTypes = true;
+			KeepTypes = true;
 			mdFlags = Operations.MetadataFlags;
 			mdFlags |= MetadataFlags.PreserveRids |
 						MetadataFlags.PreserveUSOffsets |

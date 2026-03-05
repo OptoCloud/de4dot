@@ -32,13 +32,11 @@ namespace de4dot.code {
 		/// decrypter calls like !!0 DecryptMethod&lt;string&gt;(int32).
 		/// </summary>
 		protected static bool IsGenericStringInstantiation(MethodSpec gim) {
-			if (gim == null)
-				return false;
-			var gims = gim.GenericInstMethodSig;
+			var gims = gim?.GenericInstMethodSig;
 			if (gims == null || gims.GenericArguments.Count != 1)
 				return false;
 			var ga = gims.GenericArguments[0];
-			return ga != null && ga.ElementType == ElementType.String;
+			return ga is { ElementType: ElementType.String };
 		}
 
 		protected override void InlineReturnValues(IList<CallResult> callResults) {
