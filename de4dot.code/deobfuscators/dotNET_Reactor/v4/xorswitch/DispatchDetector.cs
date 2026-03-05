@@ -18,6 +18,7 @@
 */
 
 using System.Collections.Generic;
+using System.Linq;
 using de4dot.blocks;
 using de4dot.blocks.cflow;
 using dnlib.DotNet;
@@ -26,11 +27,11 @@ using dnlib.DotNet.Emit;
 namespace de4dot.code.deobfuscators.dotNET_Reactor.v4.xorswitch;
 
 struct DispatchNode {
-	public Block SwitchBlock;
-	public Block HeaderBlock;
-	public Local StateVar;
-	public IList<Block> CaseTargets;
-	public Dictionary<Block, int> BlockToCase;
+	public Block SwitchBlock { get; init; }
+	public Block HeaderBlock { get; init; }
+	public Local StateVar { get; init; }
+	public IList<Block> CaseTargets { get; init; }
+	public Dictionary<Block, int> BlockToCase { get; init; }
 }
 
 /// <summary>
@@ -40,7 +41,7 @@ static class DispatchDetector {
 	const int MaxBfsBlocks = 5000;
 
 	public static DispatchNode? TryDetect(Block switchBlock, Blocks blocks) {
-		if (switchBlock.Targets == null || switchBlock.Targets.Count < 2)
+		if (switchBlock.Targets is null || switchBlock.Targets.Count < 2)
 			return null;
 
 		// Detect split dispatch: if switchBlock has only the switch instruction,
@@ -119,10 +120,10 @@ static class DispatchDetector {
 	static bool HasXorDispatchPattern(Block block) {
 		var instrs = block.Instructions;
 		bool hasXor = false, hasRemUn = false;
-		for (int i = 0; i < instrs.Count; i++) {
-			var code = instrs[i].OpCode.Code;
+		foreach (var t in instrs) {
+			var code = t.OpCode.Code;
 			if (code == Code.Xor) hasXor = true;
-			if (code == Code.Rem_Un) hasRemUn = true;
+			else if (code == Code.Rem_Un) hasRemUn = true;
 		}
 		return hasXor && hasRemUn;
 	}
@@ -139,17 +140,17 @@ static class DispatchDetector {
 		foreach (var instr in switchBlock.Instructions) {
 			if (instr.IsStloc()) {
 				var local = instr.Instruction.GetLocal(blocks.Locals);
-				if (local != null)
+				if (local is not null)
 					return local;
 			}
 		}
 
 		// Strategy 1b: Look for stloc in the header block
-		if (headerBlock != null) {
+		if (headerBlock is not null) {
 			foreach (var instr in headerBlock.Instructions) {
 				if (instr.IsStloc()) {
 					var local = instr.Instruction.GetLocal(blocks.Locals);
-					if (local != null)
+					if (local is not null)
 						return local;
 				}
 			}
@@ -165,7 +166,7 @@ static class DispatchDetector {
 			emu.SetLocal(local, new Int32Value(probeValue));
 
 			try {
-				if (headerBlock != null) {
+				if (headerBlock is not null) {
 					var hdrInstrs = headerBlock.Instructions;
 					int hdrEnd = hdrInstrs.Count;
 					if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
@@ -198,36 +199,29 @@ static class DispatchDetector {
 		int depth = 0;
 		int minDepth = 0;
 
-		// Process header block first if present
-		if (headerBlock != null) {
+		if (headerBlock is not null) {
 			var hdrInstrs = headerBlock.Instructions;
 			int hdrEnd = hdrInstrs.Count;
 			if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
 				hdrEnd--;
-			for (int i = 0; i < hdrEnd; i++) {
-				var instr = hdrInstrs[i].Instruction;
-				instr.CalculateStackUsage(false, out int pushes, out int pops);
-				if (pops == -1) { depth = 0; continue; }
-				depth -= pops;
-				if (depth < minDepth)
-					minDepth = depth;
-				depth += pushes;
-			}
+			TrackDepth(hdrInstrs, hdrEnd, ref depth, ref minDepth);
 		}
 
-		// Process switch block (exclude the switch itself)
 		var instrs = switchBlock.Instructions;
-		for (int i = 0; i < instrs.Count - 1; i++) {
-			var instr = instrs[i].Instruction;
-			instr.CalculateStackUsage(false, out int pushes, out int pops);
+		TrackDepth(instrs, instrs.Count - 1, ref depth, ref minDepth);
+
+		return -minDepth;
+	}
+
+	static void TrackDepth(IList<Instr> instrs, int end, ref int depth, ref int minDepth) {
+		for (int i = 0; i < end; i++) {
+			instrs[i].Instruction.CalculateStackUsage(false, out int pushes, out int pops);
 			if (pops == -1) { depth = 0; continue; }
 			depth -= pops;
 			if (depth < minDepth)
 				minDepth = depth;
 			depth += pushes;
 		}
-
-		return -minDepth;
 	}
 
 	/// <summary>
@@ -239,7 +233,7 @@ static class DispatchDetector {
 		var emu = new InstructionEmulator();
 		emu.Initialize(method, false);
 
-		if (stateVar != null)
+		if (stateVar is not null)
 			emu.SetLocal(stateVar, new Int32Value(0));
 
 		// Push probe values for any stack inputs the dispatch blocks expect
@@ -248,7 +242,7 @@ static class DispatchDetector {
 			emu.Push(new Int32Value(0));
 
 		try {
-			if (headerBlock != null) {
+			if (headerBlock is not null) {
 				var hdrInstrs = headerBlock.Instructions;
 				int hdrEnd = hdrInstrs.Count;
 				if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
@@ -325,22 +319,15 @@ static class DispatchDetector {
 			if (blockToCase.ContainsKey(source))
 				return true;
 		}
-		if (headerBlock != null) {
-			foreach (var source in headerBlock.Sources) {
-				if (source == switchBlock)
-					continue;
-				if (blockToCase.ContainsKey(source))
-					return true;
+		if (headerBlock is not null) {
+			if (headerBlock.Sources.Where(source => source != switchBlock).Any(blockToCase.ContainsKey))
+			{
+				return true;
 			}
 		}
 		// Also check if any case target directly feeds back to the dispatch
-		if (switchBlock.Targets != null) {
-			foreach (var target in switchBlock.Targets) {
-				foreach (var succ in target.GetTargets()) {
-					if (succ == switchBlock || succ == headerBlock)
-						return true;
-				}
-			}
+		if (switchBlock.Targets is not null) {
+			return switchBlock.Targets.Any(target => target.GetTargets().Any(succ => succ == switchBlock || succ == headerBlock));
 		}
 		return false;
 	}

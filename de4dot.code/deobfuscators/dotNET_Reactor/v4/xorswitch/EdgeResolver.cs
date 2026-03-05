@@ -18,6 +18,7 @@
 */
 
 using System.Collections.Generic;
+using System.Linq;
 using de4dot.blocks;
 using de4dot.blocks.cflow;
 using dnlib.DotNet;
@@ -26,12 +27,12 @@ using dnlib.DotNet.Emit;
 namespace de4dot.code.deobfuscators.dotNET_Reactor.v4.xorswitch;
 
 struct ResolvedEdge {
-	public Block Predecessor;
-	public Block Target;
-	public int CaseIndex;
-	public int InstructionsToRemove;
-	public int StackCleanupPops;
-	public int? TargetIncomingStateVar;
+	public Block Predecessor { get; init; }
+	public Block Target { get; init; }
+	public int CaseIndex { get; init; }
+	public int InstructionsToRemove { get; init; }
+	public int StackCleanupPops { get; init; }
+	public int? TargetIncomingStateVar { get; init; }
 }
 
 /// <summary>
@@ -46,19 +47,36 @@ struct ResolvedEdge {
 ///     or seeds are discovered.
 /// </summary>
 class EdgeResolver {
-	readonly DispatchNode dispatch;
-	readonly Blocks blocks;
-	readonly MethodDef method;
-	int resolvedCount;
-	int failedCount;
+	readonly DispatchNode _dispatch;
+	readonly Blocks _blocks;
+	readonly MethodDef _method;
 
-	public int ResolvedCount => resolvedCount;
-	public int FailedCount => failedCount;
+	public int ResolvedCount { get; private set; }
+
+	public int FailedCount { get; private set; }
 
 	public EdgeResolver(DispatchNode dispatch, Blocks blocks) {
-		this.dispatch = dispatch;
-		this.blocks = blocks;
-		method = blocks.Method;
+		_dispatch = dispatch;
+		_blocks = blocks;
+		_method = blocks.Method;
+	}
+
+	/// <summary>
+	///     Creates and initializes an emulator, seeding stateVar from the provided value,
+	///     zero (for entry blocks with no predecessors), or unknown.
+	/// </summary>
+	InstructionEmulator CreateEmulator(int? seedStateVar, bool isEntry) {
+		var emu = new InstructionEmulator();
+		emu.Initialize(_method, false);
+		if (_dispatch.StateVar is not null) {
+			if (seedStateVar.HasValue)
+				emu.SetLocal(_dispatch.StateVar, new Int32Value(seedStateVar.Value));
+			else if (isEntry)
+				emu.SetLocal(_dispatch.StateVar, Int32Value.Zero);
+			else
+				emu.SetLocal(_dispatch.StateVar, Int32Value.CreateUnknown());
+		}
+		return emu;
 	}
 
 	/// <summary>
@@ -66,31 +84,23 @@ class EdgeResolver {
 	///     Excludes the SwitchBlock and HeaderBlock themselves.
 	/// </summary>
 	List<Block> GetDispatchPredecessors() {
-		var seen = new HashSet<Block>();
-		var result = new List<Block>();
-		seen.Add(dispatch.SwitchBlock);
-		if (dispatch.HeaderBlock != null)
-			seen.Add(dispatch.HeaderBlock);
+		var seen = new HashSet<Block> { _dispatch.SwitchBlock };
+		if (_dispatch.HeaderBlock is not null)
+			seen.Add(_dispatch.HeaderBlock);
 
-		foreach (var pred in dispatch.SwitchBlock.Sources) {
-			if (seen.Add(pred))
-				result.Add(pred);
+		var result = _dispatch.SwitchBlock.Sources.Where(pred => seen.Add(pred)).ToList();
+		
+		if (_dispatch.HeaderBlock is not null) {
+			result.AddRange(_dispatch.HeaderBlock.Sources.Where(pred => seen.Add(pred)));
 		}
-		if (dispatch.HeaderBlock != null) {
-			foreach (var pred in dispatch.HeaderBlock.Sources) {
-				if (seen.Add(pred))
-					result.Add(pred);
-			}
-		}
+		
 		return result;
 	}
 
 	/// <summary>
 	///     Checks if a block is part of the dispatch (either the switch block or header block).
 	/// </summary>
-	bool IsDispatchBlock(Block block) {
-		return block == dispatch.SwitchBlock || block == dispatch.HeaderBlock;
-	}
+	bool IsDispatchBlock(Block block) => block == _dispatch.SwitchBlock || block == _dispatch.HeaderBlock;
 
 	/// <summary>
 	///     Emulates the dispatch blocks (header + switch computation, excluding the switch itself).
@@ -100,8 +110,8 @@ class EdgeResolver {
 		preRemDividend = null;
 
 		// Emulate header block if present and the predecessor targets it
-		if (dispatch.HeaderBlock != null && dispatch.HeaderBlock.Sources.Contains(predecessor)) {
-			var hdrInstrs = dispatch.HeaderBlock.Instructions;
+		if (_dispatch.HeaderBlock is not null && _dispatch.HeaderBlock.Sources.Contains(predecessor)) {
+			var hdrInstrs = _dispatch.HeaderBlock.Instructions;
 			int hdrEnd = hdrInstrs.Count;
 			if (hdrEnd > 0 && hdrInstrs[hdrEnd - 1].IsBr())
 				hdrEnd--;
@@ -109,7 +119,7 @@ class EdgeResolver {
 		}
 
 		// Split switch block emulation at rem.un to capture pre-rem dividend
-		var switchInstrs = dispatch.SwitchBlock.Instructions;
+		var switchInstrs = _dispatch.SwitchBlock.Instructions;
 		int switchIdx = FindSwitchIndex(switchInstrs);
 		if (switchIdx < 0)
 			return;
@@ -125,7 +135,7 @@ class EdgeResolver {
 					preRemDividend = dv;
 				emu.Push(divisor);
 				if (divisor is Int32Value divIv && divIv.AllBitsValid() &&
-					(uint)divIv.Value != (uint)dispatch.CaseTargets.Count)
+					(uint)divIv.Value != (uint)_dispatch.CaseTargets.Count)
 					preRemDividend = null;
 			}
 			emu.Emulate(switchInstrs, remIdx, emuEnd);
@@ -140,33 +150,37 @@ class EdgeResolver {
 		var resolved = new HashSet<Block>();
 
 		// Phase 1: Direct resolution (unseeded)
-		int maxIterations = dispatch.CaseTargets.Count * 4;
+		int maxIterations = _dispatch.CaseTargets.Count * 4;
 		for (int iter = 0; iter < maxIterations; iter++) {
 			bool foundNew = false;
 
 			foreach (var pred in GetDispatchPredecessors()) {
 				if (resolved.Contains(pred))
 					continue;
+				
 				if (pred.LastInstr.OpCode.Code == Code.Switch)
 					continue;
 
 				if (IsUnconditionalPredecessor(pred)) {
 					var edge = TryResolveEdge(pred);
-					if (edge != null) {
-						edges.Add(edge.Value);
-						resolved.Add(pred);
-						resolvedCount++;
-						foundNew = true;
-					}
+					if (edge is null) continue;
+					
+					edges.Add(edge.Value);
+					resolved.Add(pred);
+					ResolvedCount++;
+					foundNew = true;
+					continue;
 				}
-				else if (IsConditionalPredecessor(pred)) {
+				
+				if (IsConditionalPredecessor(pred)) {
 					var condEdges = TryResolveConditionalEdge(pred);
-					if (condEdges != null && condEdges.Count > 0) {
-						edges.AddRange(condEdges);
-						resolved.Add(pred);
-						resolvedCount += condEdges.Count;
-						foundNew = true;
-					}
+					if (condEdges is not { Count: > 0 }) continue;
+					
+					edges.AddRange(condEdges);
+					resolved.Add(pred);
+					ResolvedCount += condEdges.Count;
+					foundNew = true;
+					continue;
 				}
 			}
 
@@ -177,22 +191,22 @@ class EdgeResolver {
 		var indirectResolved = new HashSet<Block>();
 
 		// Phases 2-5 with fixed-point iteration (requires stateVar)
-		if (dispatch.StateVar != null) {
+		if (_dispatch.StateVar is not null) {
 			var caseStateVar = new Dictionary<int, int>();
-			foreach (var edge in edges) {
-				if (edge.TargetIncomingStateVar.HasValue)
-					caseStateVar[edge.CaseIndex] = edge.TargetIncomingStateVar.Value;
+			foreach (var edge in edges.Where(edge => edge.TargetIncomingStateVar.HasValue))
+			{
+				caseStateVar[edge.CaseIndex] = edge.TargetIncomingStateVar.Value;
 			}
 			var allSeeds = new HashSet<int>(caseStateVar.Values);
 
-			int maxOuterIter = dispatch.CaseTargets.Count * 3;
+			int maxOuterIter = _dispatch.CaseTargets.Count * 3;
 			for (int outerIter = 0; outerIter < maxOuterIter; outerIter++) {
 				int prevEdgeCount = edges.Count;
 				int prevSeedCount = allSeeds.Count;
 
 				// Phase 2: Seeded forward propagation
 				{
-					int maxPhase2 = dispatch.CaseTargets.Count * 2;
+					int maxPhase2 = _dispatch.CaseTargets.Count * 2;
 					for (int iter = 0; iter < maxPhase2; iter++) {
 						bool foundNew2 = false;
 
@@ -204,16 +218,16 @@ class EdgeResolver {
 							if (!IsUnconditionalPredecessor(pred))
 								continue;
 
-							if (!dispatch.BlockToCase.TryGetValue(pred, out int predCaseIdx))
+							if (!_dispatch.BlockToCase.TryGetValue(pred, out int predCaseIdx))
 								continue;
 							if (!caseStateVar.TryGetValue(predCaseIdx, out int seed))
 								continue;
 
 							var edge = TryResolveEdge(pred, seed);
-							if (edge != null) {
+							if (edge is not null) {
 								edges.Add(edge.Value);
 								resolved.Add(pred);
-								resolvedCount++;
+								ResolvedCount++;
 								foundNew2 = true;
 
 								if (edge.Value.TargetIncomingStateVar.HasValue) {
@@ -231,7 +245,7 @@ class EdgeResolver {
 				// Phase 3: Brute-force all known seeds for disconnected subgraphs
 				if (allSeeds.Count > 0) {
 					bool phase3Progress = true;
-					int maxPhase3 = dispatch.CaseTargets.Count * 2;
+					int maxPhase3 = _dispatch.CaseTargets.Count * 2;
 					for (int iter3 = 0; iter3 < maxPhase3 && phase3Progress; iter3++) {
 						phase3Progress = false;
 
@@ -243,7 +257,7 @@ class EdgeResolver {
 							if (!IsUnconditionalPredecessor(pred))
 								continue;
 
-							bool hasCaseIdx = dispatch.BlockToCase.TryGetValue(pred, out int ci);
+							bool hasCaseIdx = _dispatch.BlockToCase.TryGetValue(pred, out int ci);
 							if (hasCaseIdx && caseStateVar.ContainsKey(ci))
 								continue;
 
@@ -251,10 +265,10 @@ class EdgeResolver {
 								if (hasCaseIdx && !VerifySeedRoutesToCase(trySeed, ci))
 									continue;
 								var edge = TryResolveEdge(pred, trySeed);
-								if (edge != null) {
+								if (edge is not null) {
 									edges.Add(edge.Value);
 									resolved.Add(pred);
-									resolvedCount++;
+									ResolvedCount++;
 									phase3Progress = true;
 
 									if (edge.Value.TargetIncomingStateVar.HasValue) {
@@ -272,7 +286,7 @@ class EdgeResolver {
 				// Phase 4: Indirect resolution through passthrough blocks
 				{
 					bool progress4 = true;
-					int maxIter4 = dispatch.CaseTargets.Count * 2;
+					int maxIter4 = _dispatch.CaseTargets.Count * 2;
 					for (int iter4 = 0; iter4 < maxIter4 && progress4; iter4++) {
 						progress4 = false;
 
@@ -284,7 +298,7 @@ class EdgeResolver {
 							if (!IsUnconditionalPredecessor(passthrough))
 								continue;
 
-							bool hasPtCaseIdx = dispatch.BlockToCase.TryGetValue(passthrough, out int ptCaseIdx);
+							bool hasPtCaseIdx = _dispatch.BlockToCase.TryGetValue(passthrough, out int ptCaseIdx);
 
 							foreach (var src in new List<Block>(passthrough.Sources)) {
 								if (indirectResolved.Contains(src))
@@ -297,20 +311,20 @@ class EdgeResolver {
 								var intermediates = new List<Block> { passthrough };
 								var edge = TryResolveIndirectEdge(src, intermediates);
 
-								if (edge == null) {
-									foreach (var seed in allSeeds) {
-										if (hasPtCaseIdx && !VerifySeedRoutesToCase(seed, ptCaseIdx))
-											continue;
-										edge = TryResolveIndirectEdge(src, intermediates, seed);
-										if (edge != null)
-											break;
+								if (edge is null) {
+									IEnumerable<int> seeds = allSeeds;
+
+									if (hasPtCaseIdx) {
+										seeds = seeds.Where(seed => VerifySeedRoutesToCase(seed, ptCaseIdx));
 									}
+
+									edge = seeds.Select(seed => TryResolveIndirectEdge(src, intermediates, seed)).FirstOrDefault();
 								}
 
-								if (edge != null) {
+								if (edge is not null) {
 									edges.Add(edge.Value);
 									indirectResolved.Add(src);
-									resolvedCount++;
+									ResolvedCount++;
 									progress4 = true;
 
 									// Immediately merge Phase 4 seeds
@@ -336,7 +350,7 @@ class EdgeResolver {
 		else {
 			// No stateVar: Phase 4 only (unseeded indirect resolution)
 			bool progress4 = true;
-			int maxIter4 = dispatch.CaseTargets.Count * 2;
+			int maxIter4 = _dispatch.CaseTargets.Count * 2;
 			for (int iter4 = 0; iter4 < maxIter4 && progress4; iter4++) {
 				progress4 = false;
 
@@ -359,10 +373,10 @@ class EdgeResolver {
 						var intermediates = new List<Block> { passthrough };
 						var edge = TryResolveIndirectEdge(src, intermediates);
 
-						if (edge != null) {
+						if (edge is not null) {
 							edges.Add(edge.Value);
 							indirectResolved.Add(src);
-							resolvedCount++;
+							ResolvedCount++;
 							progress4 = true;
 						}
 					}
@@ -374,25 +388,18 @@ class EdgeResolver {
 		foreach (var passthrough in GetDispatchPredecessors()) {
 			if (resolved.Contains(passthrough))
 				continue;
-			bool allSourcesResolved = true;
-			foreach (var src in passthrough.Sources) {
-				if (!indirectResolved.Contains(src) && !resolved.Contains(src)) {
-					allSourcesResolved = false;
-					break;
-				}
-			}
-			if (allSourcesResolved && passthrough.Sources.Count > 0)
+			if (passthrough.Sources.Any(src => indirectResolved.Contains(src) || resolved.Contains(src)))
 				resolved.Add(passthrough);
 		}
 
 		// Compute accurate unresolved count
-		failedCount = 0;
+		FailedCount = 0;
 		foreach (var pred in GetDispatchPredecessors()) {
 			if (resolved.Contains(pred))
 				continue;
 			if (pred.LastInstr.OpCode.Code == Code.Switch)
 				continue;
-			failedCount++;
+			FailedCount++;
 		}
 
 		return edges;
@@ -408,13 +415,7 @@ class EdgeResolver {
 			return false;
 		if (IsDispatchBlock(block.FallThrough))
 			return true;
-		if (block.Targets != null) {
-			foreach (var target in block.Targets) {
-				if (IsDispatchBlock(target))
-					return true;
-			}
-		}
-		return false;
+		return block.Targets?.Any(IsDispatchBlock) ?? false;
 	}
 
 	/// <summary>
@@ -423,9 +424,9 @@ class EdgeResolver {
 	/// </summary>
 	List<Block> BuildEmulationChain(Block predecessor) {
 		var chain = new List<Block> { predecessor };
-		var visited = new HashSet<Block> { predecessor, dispatch.SwitchBlock };
-		if (dispatch.HeaderBlock != null)
-			visited.Add(dispatch.HeaderBlock);
+		var visited = new HashSet<Block> { predecessor, _dispatch.SwitchBlock };
+		if (_dispatch.HeaderBlock is not null)
+			visited.Add(_dispatch.HeaderBlock);
 		var current = predecessor;
 		const int maxChainLength = 20;
 
@@ -437,7 +438,7 @@ class EdgeResolver {
 					continue;
 				if (src.LastInstr.OpCode.Code == Code.Switch)
 					continue;
-				if (src.FallThrough == current || (src.Targets != null && src.Targets.Count == 1 && src.Targets[0] == current && src.LastInstr.IsBr())) {
+				if (src.FallThrough == current || (src.Targets is not null && src.Targets.Count == 1 && src.Targets[0] == current && src.LastInstr.IsBr())) {
 					singlePred = src;
 					predCount++;
 				}
@@ -446,7 +447,7 @@ class EdgeResolver {
 				}
 			}
 
-			if (predCount != 1 || singlePred == null)
+			if (predCount != 1 || singlePred is null)
 				break;
 
 			chain.Add(singlePred);
@@ -463,17 +464,7 @@ class EdgeResolver {
 
 		var chain = BuildEmulationChain(predecessor);
 
-		var emu = new InstructionEmulator();
-		emu.Initialize(method, false);
-
-		if (dispatch.StateVar != null) {
-			if (seedStateVar.HasValue)
-				emu.SetLocal(dispatch.StateVar, new Int32Value(seedStateVar.Value));
-			else if (chain[0].Sources.Count == 0)
-				emu.SetLocal(dispatch.StateVar, Int32Value.Zero);
-			else
-				emu.SetLocal(dispatch.StateVar, Int32Value.CreateUnknown());
-		}
+		var emu = CreateEmulator(seedStateVar, chain[0].Sources.Count == 0);
 
 		Int32Value preRemDividend = null;
 
@@ -501,9 +492,9 @@ class EdgeResolver {
 		if (tos is Int32Value iv && iv.AllBitsValid()) {
 			caseIndex = iv.Value; // standard path — already the unsigned remainder
 		}
-		else if (preRemDividend != null) {
+		else if (preRemDividend is not null) {
 			var partial = TryPartialCaseIndex(preRemDividend);
-			if (partial == null)
+			if (partial is null)
 				return null;
 			caseIndex = partial.Value;
 		}
@@ -511,19 +502,19 @@ class EdgeResolver {
 			return null;
 		}
 
-		if (caseIndex < 0 || caseIndex >= dispatch.CaseTargets.Count)
+		if (caseIndex < 0 || caseIndex >= _dispatch.CaseTargets.Count)
 			return null;
 
-		var target = dispatch.CaseTargets[caseIndex];
+		var target = _dispatch.CaseTargets[caseIndex];
 
 		int? targetIncoming = null;
-		if (dispatch.StateVar != null) {
-			var sv = emu.GetLocal(dispatch.StateVar);
+		if (_dispatch.StateVar is not null) {
+			var sv = emu.GetLocal(_dispatch.StateVar);
 			if (sv is Int32Value svIv && svIv.AllBitsValid())
 				targetIncoming = svIv.Value;
 		}
 
-		var boundary = StateUpdateFinder.Find(predecessor, dispatch, blocks.Locals);
+		var boundary = StateUpdateFinder.Find(predecessor, _dispatch, _blocks.Locals);
 		int instrsToRemove;
 		int stackPops;
 
@@ -556,17 +547,17 @@ class EdgeResolver {
 
 		var fallThrough = predecessor.FallThrough;
 		Block branchTarget = null;
-		if (predecessor.Targets != null && predecessor.Targets.Count == 1)
+		if (predecessor.Targets is { Count: 1 })
 			branchTarget = predecessor.Targets[0];
 
 		bool fallThroughToSwitch = IsDispatchBlock(fallThrough);
-		bool branchToSwitch = branchTarget != null && IsDispatchBlock(branchTarget);
+		bool branchToSwitch = branchTarget is not null && IsDispatchBlock(branchTarget);
 
 		if (!fallThroughToSwitch && !branchToSwitch)
 			return null;
 
 		var edge = TryResolveConditionalPath(predecessor);
-		if (edge != null) {
+		if (edge is not null) {
 			// Add once per path that leads to the switch so Apply retargets each one
 			if (fallThroughToSwitch)
 				edges.Add(edge.Value);
@@ -580,20 +571,10 @@ class EdgeResolver {
 	ResolvedEdge? TryResolveConditionalPath(Block predecessor) {
 		var predInstrs = predecessor.Instructions;
 
-		var emu = new InstructionEmulator();
-		emu.Initialize(method, false);
-
-		if (dispatch.StateVar != null)
-			emu.SetLocal(dispatch.StateVar, Int32Value.CreateUnknown());
+		var emu = CreateEmulator(null, false);
 
 		try {
 			emu.Emulate(predInstrs, 0, predInstrs.Count);
-		}
-		catch {
-			return null;
-		}
-
-		try {
 			EmulateDispatchBlocks(emu, predecessor, out _);
 		}
 		catch {
@@ -604,16 +585,16 @@ class EdgeResolver {
 			return null;
 
 		var tos = emu.Pop();
-		if (!(tos is Int32Value iv) || !iv.AllBitsValid())
+		if (tos is not Int32Value iv || !iv.AllBitsValid())
 			return null;
 
 		int caseIndex = iv.Value;
-		if (caseIndex < 0 || caseIndex >= dispatch.CaseTargets.Count)
+		if (caseIndex < 0 || caseIndex >= _dispatch.CaseTargets.Count)
 			return null;
 
 		return new ResolvedEdge {
 			Predecessor = predecessor,
-			Target = dispatch.CaseTargets[caseIndex],
+			Target = _dispatch.CaseTargets[caseIndex],
 			CaseIndex = caseIndex,
 			InstructionsToRemove = 0,
 			StackCleanupPops = 0,
@@ -629,22 +610,12 @@ class EdgeResolver {
 
 		// Compute exit stack depth of source block to determine cleanup pops needed
 		var depths = StateUpdateFinder.ComputeStackDepths(srcInstrs);
-		if (depths == null)
+		if (depths is null)
 			return null;
 
 		int exitDepth = depths[srcInstrs.Count];
 
-		var emu = new InstructionEmulator();
-		emu.Initialize(method, false);
-
-		if (dispatch.StateVar != null) {
-			if (seedStateVar.HasValue)
-				emu.SetLocal(dispatch.StateVar, new Int32Value(seedStateVar.Value));
-			else if (source.Sources.Count == 0)
-				emu.SetLocal(dispatch.StateVar, Int32Value.Zero);
-			else
-				emu.SetLocal(dispatch.StateVar, Int32Value.CreateUnknown());
-		}
+		var emu = CreateEmulator(seedStateVar, source.Sources.Count == 0);
 
 		Int32Value preRemDividend = null;
 
@@ -680,9 +651,9 @@ class EdgeResolver {
 		if (tos is Int32Value iv && iv.AllBitsValid()) {
 			caseIndex = iv.Value;
 		}
-		else if (preRemDividend != null) {
+		else if (preRemDividend is not null) {
 			var partial = TryPartialCaseIndex(preRemDividend);
-			if (partial == null)
+			if (partial is null)
 				return null;
 			caseIndex = partial.Value;
 		}
@@ -690,14 +661,14 @@ class EdgeResolver {
 			return null;
 		}
 
-		if (caseIndex < 0 || caseIndex >= dispatch.CaseTargets.Count)
+		if (caseIndex < 0 || caseIndex >= _dispatch.CaseTargets.Count)
 			return null;
 
-		var target = dispatch.CaseTargets[caseIndex];
+		var target = _dispatch.CaseTargets[caseIndex];
 
 		int? targetIncoming = null;
-		if (dispatch.StateVar != null) {
-			var sv = emu.GetLocal(dispatch.StateVar);
+		if (_dispatch.StateVar is not null) {
+			var sv = emu.GetLocal(_dispatch.StateVar);
 			if (sv is Int32Value svIv && svIv.AllBitsValid())
 				targetIncoming = svIv.Value;
 		}
@@ -724,15 +695,15 @@ class EdgeResolver {
 	///     from affine update patterns in blocks that return to the dispatch.
 	/// </summary>
 	int RunAlgebraicSeedExtraction(Dictionary<int, int> caseStateVar, HashSet<int> allSeeds) {
-		if (dispatch.StateVar == null)
+		if (_dispatch.StateVar is null)
 			return 0;
 
 		var switchConstants = ExtractSwitchConstants();
-		if (switchConstants == null)
+		if (switchConstants is null)
 			return 0;
 
 		var (xorKey, modulus) = switchConstants.Value;
-		if ((uint)modulus != (uint)dispatch.CaseTargets.Count)
+		if ((uint)modulus != (uint)_dispatch.CaseTargets.Count)
 			return 0;
 
 		var dispatchPreds = new HashSet<Block>(GetDispatchPredecessors());
@@ -740,11 +711,11 @@ class EdgeResolver {
 		// Collect all derived seeds: nextCase → set of nextSeed values
 		var derivedSeeds = new Dictionary<int, HashSet<int>>();
 
-		for (int caseIdx = 0; caseIdx < dispatch.CaseTargets.Count; caseIdx++) {
+		for (int caseIdx = 0; caseIdx < _dispatch.CaseTargets.Count; caseIdx++) {
 			if (!caseStateVar.TryGetValue(caseIdx, out int seed))
 				continue;
 
-			var caseTarget = dispatch.CaseTargets[caseIdx];
+			var caseTarget = _dispatch.CaseTargets[caseIdx];
 
 			// BFS forward from case target, bounded by 50 visited blocks
 			var queue = new Queue<Block>();
@@ -765,22 +736,21 @@ class EdgeResolver {
 				if (!isDispatchPred) {
 					if (IsDispatchBlock(block.FallThrough))
 						isDispatchPred = true;
-					else if (block.LastInstr.IsBr() && block.Targets != null &&
-						block.Targets.Count == 1 && IsDispatchBlock(block.Targets[0]))
+					else if (block.LastInstr.IsBr() && block.Targets is { Count: 1 } && IsDispatchBlock(block.Targets[0]))
 						isDispatchPred = true;
 				}
 
 				if (isDispatchPred) {
-					var affine = ExtractAffineUpdate(block, dispatch.StateVar, blocks.Locals);
-					if (affine != null) {
+					var affine = ExtractAffineUpdate(block, _dispatch.StateVar, _blocks.Locals);
+					if (affine is not null) {
 						var (mulConst, xorConst) = affine.Value;
 						uint nextSeedU = unchecked(((uint)seed * (uint)mulConst) ^ (uint)xorConst ^ (uint)xorKey);
 						int nextSeed = (int)nextSeedU;
 						int nextCase = (int)(nextSeedU % (uint)modulus);
 
-						if (nextCase < dispatch.CaseTargets.Count) {
+						if (nextCase < _dispatch.CaseTargets.Count) {
 							if (!derivedSeeds.TryGetValue(nextCase, out var seedSet)) {
-								seedSet = new HashSet<int>();
+								seedSet = [];
 								derivedSeeds[nextCase] = seedSet;
 							}
 							seedSet.Add(nextSeed);
@@ -805,10 +775,9 @@ class EdgeResolver {
 			if (seedSet.Count != 1)
 				continue; // ambiguous — multiple different seeds for same case
 
-			int nextSeed = 0;
-			foreach (var s in seedSet) { nextSeed = s; break; }
+			int nextSeed = seedSet.FirstOrDefault();
 
-			if (caseStateVar.TryGetValue(nextCase, out int existing))
+			if (caseStateVar.TryGetValue(nextCase, out int _))
 				continue;
 
 			caseStateVar[nextCase] = nextSeed;
@@ -825,7 +794,7 @@ class EdgeResolver {
 	///     so case_index = seed % M with no additional XOR.
 	/// </summary>
 	bool VerifySeedRoutesToCase(int seed, int expectedCaseIndex) {
-		int M = dispatch.CaseTargets.Count;
+		int M = _dispatch.CaseTargets.Count;
 		if (M < 2)
 			return true;
 		return (int)((uint)seed % (uint)M) == expectedCaseIndex;
@@ -858,11 +827,11 @@ class EdgeResolver {
 	///     Checks both the switch block and header block (if present).
 	/// </summary>
 	(int xorKey, int modulus)? ExtractSwitchConstants() {
-		var result = ExtractSwitchConstantsFromBlock(dispatch.SwitchBlock);
-		if (result != null)
+		var result = ExtractSwitchConstantsFromBlock(_dispatch.SwitchBlock);
+		if (result is not null)
 			return result;
-		if (dispatch.HeaderBlock != null)
-			return ExtractSwitchConstantsFromBlock(dispatch.HeaderBlock);
+		if (_dispatch.HeaderBlock is not null)
+			return ExtractSwitchConstantsFromBlock(_dispatch.HeaderBlock);
 		return null;
 	}
 
@@ -883,7 +852,7 @@ class EdgeResolver {
 		// Verify no other rem* opcodes after remIdx
 		for (int i = remIdx + 1; i < instrs.Count; i++) {
 			var code = instrs[i].OpCode.Code;
-			if (code == Code.Rem || code == Code.Rem_Un)
+			if (code is Code.Rem or Code.Rem_Un)
 				return null;
 		}
 
@@ -957,7 +926,7 @@ class EdgeResolver {
 			bool isStateVar = loadedLocal == stateVar;
 
 			// Alias tracking: check if loadedLocal is a one-step alias of stateVar
-			if (!isStateVar && loadedLocal != null) {
+			if (!isStateVar && loadedLocal is not null) {
 				for (int j = i - 5; j >= 1; j--) {
 					if (instrs[j].IsStloc() && Instr.GetLocalVar(locals, instrs[j]) == loadedLocal &&
 						instrs[j - 1].IsLdloc() && Instr.GetLocalVar(locals, instrs[j - 1]) == stateVar) {
@@ -994,9 +963,9 @@ class EdgeResolver {
 	///     enumerates unknown bit combinations to check if the remainder is unique.
 	/// </summary>
 	int? TryPartialCaseIndex(Int32Value preRemDividend) {
-		if (preRemDividend == null)
+		if (preRemDividend is null)
 			return null;
-		int M = dispatch.CaseTargets.Count;
+		int M = _dispatch.CaseTargets.Count;
 		if (M < 2)
 			return null;
 		uint mu = (uint)M;
