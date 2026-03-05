@@ -468,8 +468,6 @@ namespace de4dot.code {
 				dynamicStringInliner.Initialize(GetMethodInfos());
 		}
 
-		IEnumerable<int> GetMethodTokens() => GetMethodInfos().Select(info => info.MethodToken);
-
 		IEnumerable<StringDecrypterMethodInfo> GetMethodInfos() {
 			if (!userStringDecrypterMethods)
 				return deob.GetStringDecrypterMethodInfos();
@@ -481,7 +479,7 @@ namespace de4dot.code {
 				if (Utils.StartsWith(tokenStr, "0x", StringComparison.OrdinalIgnoreCase))
 					tokenStr = tokenStr.Substring(2);
 				if (int.TryParse(tokenStr, NumberStyles.HexNumber, null, out int methodToken)) {
-					infos.Add(new StringDecrypterMethodInfo(methodToken, true));
+					infos.Add(new StringDecrypterMethodInfo(methodToken, false));
 					continue;
 				}
 				infos.AddRange(FindMethodInfos(val));
@@ -522,7 +520,7 @@ namespace de4dot.code {
 					}
 
 					Logger.v("Adding string decrypter; token: {0:X8}, method: {1}", method.MDToken.ToInt32(), Utils.RemoveNewlines(method.FullName));
-					infos.Add(new StringDecrypterMethodInfo(method.MDToken.ToInt32(), true));
+					infos.Add(new StringDecrypterMethodInfo(method.MDToken.ToInt32(), false));
 				}
 			}
 

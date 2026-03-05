@@ -17,6 +17,8 @@
     along with de4dot.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+using System.Collections.Generic;
+
 namespace de4dot.blocks.cflow {
 	public enum ValueType : byte {
 		Unknown,
@@ -67,7 +69,7 @@ namespace de4dot.blocks.cflow {
 	///     List&lt;Value&gt; so stelem.i4/ldelem.i4 can track element values.
 	/// </summary>
 	public class TrackedArrayValue : ObjectValue {
-		public TrackedArrayValue(System.Collections.Generic.List<Value> arr)
+		public TrackedArrayValue(List<Value> arr)
 			: base(arr, ValueType.Unknown) { }
 		public override string ToString() => "<tracked array>";
 	}

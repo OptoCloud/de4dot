@@ -106,7 +106,6 @@ namespace de4dot.code.deobfuscators {
 
 		// Returns all string decrypter method tokens
 		IEnumerable<int> GetStringDecrypterMethods();
-		
-        IEnumerable<StringDecrypterMethodInfo> GetStringDecrypterMethodInfos();
+		IEnumerable<StringDecrypterMethodInfo> GetStringDecrypterMethodInfos();
 	}
 }

@@ -83,7 +83,6 @@ namespace de4dot.code {
 		IAssemblyClient assemblyClient;
 		Dictionary<int, int> methodTokenToId = new Dictionary<int, int>();
 		Dictionary<int, StringDecrypterMethodInfo> methodTokenToInfo = new Dictionary<int, StringDecrypterMethodInfo>();
-		Dictionary<int, StringDecrypterMethodInfo> methodIdToInfo = new Dictionary<int, StringDecrypterMethodInfo>();
 
 		class MyCallResult : CallResult {
 			public int methodId;
@@ -102,14 +101,12 @@ namespace de4dot.code {
 		public void Initialize(IEnumerable<StringDecrypterMethodInfo> methodInfos) {
 			methodTokenToId.Clear();
 			methodTokenToInfo.Clear();
-			methodIdToInfo.Clear();
 			foreach (var info in methodInfos) {
 				if (methodTokenToId.ContainsKey(info.MethodToken))
 					continue;
 				int methodId = assemblyClient.StringDecrypterService.DefineStringDecrypter(info.MethodToken);
 				methodTokenToId[info.MethodToken] = methodId;
 				methodTokenToInfo[info.MethodToken] = info;
-				methodIdToInfo[methodId] = info;
 			}
 		}
 

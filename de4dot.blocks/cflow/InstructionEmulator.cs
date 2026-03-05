@@ -409,9 +409,7 @@ namespace de4dot.blocks.cflow {
 			case Code.Stelem_R4:
 			case Code.Stelem_R8:
 			case Code.Stelem_Ref:
-				Emulate_Stelem_I4(instr); break;
-
-			case Code.Unbox:
+				Emulate_Stelem(instr); break;
 
 			case Code.Conv_R_Un:Emulate_Conv_R_Un(instr); break;
 			case Code.Conv_R4:	Emulate_Conv_R4(instr); break;
@@ -464,7 +462,7 @@ namespace de4dot.blocks.cflow {
 			}
 		}
 
-		void Emulate_Stelem_I4(Instruction instr) {
+		void Emulate_Stelem(Instruction instr) {
 			var val = valueStack.Pop();
 			var idxValue = valueStack.Pop();
 			var obj = valueStack.Pop();
