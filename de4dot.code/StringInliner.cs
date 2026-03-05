@@ -82,7 +82,6 @@ namespace de4dot.code {
 	public class DynamicStringInliner : StringInlinerBase {
 		IAssemblyClient assemblyClient;
 		Dictionary<int, int> methodTokenToId = new Dictionary<int, int>();
-		Dictionary<int, StringDecrypterMethodInfo> methodTokenToInfo = new Dictionary<int, StringDecrypterMethodInfo>();
 
 		class MyCallResult : CallResult {
 			public int methodId;
@@ -100,42 +99,32 @@ namespace de4dot.code {
 
 		public void Initialize(IEnumerable<StringDecrypterMethodInfo> methodInfos) {
 			methodTokenToId.Clear();
-			methodTokenToInfo.Clear();
 			foreach (var info in methodInfos) {
 				if (methodTokenToId.ContainsKey(info.MethodToken))
 					continue;
 				int methodId = assemblyClient.StringDecrypterService.DefineStringDecrypter(info.MethodToken);
 				methodTokenToId[info.MethodToken] = methodId;
-				methodTokenToInfo[info.MethodToken] = info;
 			}
 		}
 
 		protected override CallResult CreateCallResult(IMethod method, MethodSpec gim, Block block, int callInstrIndex) {
 			if (gim != null && !IsGenericStringInstantiation(gim))
 				return null;
-			if (!TryGetMethodId(method, out int methodId, out var methodInfo))
-				return null;
-			if (methodInfo != null && methodInfo.RequireGenericString && (gim == null || !IsGenericStringInstantiation(gim)))
+			if (!TryGetMethodId(method, out int methodId))
 				return null;
 			return new MyCallResult(block, callInstrIndex, methodId, gim);
 		}
 
-		bool TryGetMethodId(IMethod method, out int methodId, out StringDecrypterMethodInfo methodInfo) {
+		bool TryGetMethodId(IMethod method, out int methodId) {
 			methodId = 0;
-			methodInfo = null;
 			int methodToken = method.MDToken.ToInt32();
-			if (methodTokenToId.TryGetValue(methodToken, out methodId)) {
-				methodTokenToInfo.TryGetValue(methodToken, out methodInfo);
+			if (methodTokenToId.TryGetValue(methodToken, out methodId))
 				return true;
-			}
 			var resolved = (method as IMethodDefOrRef)?.ResolveMethodDef();
 			if (resolved == null)
 				return false;
 			methodToken = resolved.MDToken.ToInt32();
-			if (!methodTokenToId.TryGetValue(methodToken, out methodId))
-				return false;
-			methodTokenToInfo.TryGetValue(methodToken, out methodInfo);
-			return true;
+			return methodTokenToId.TryGetValue(methodToken, out methodId);
 		}
 
 		protected override void InlineAllCalls() {

@@ -479,7 +479,7 @@ namespace de4dot.code {
 				if (Utils.StartsWith(tokenStr, "0x", StringComparison.OrdinalIgnoreCase))
 					tokenStr = tokenStr.Substring(2);
 				if (int.TryParse(tokenStr, NumberStyles.HexNumber, null, out int methodToken)) {
-					infos.Add(new StringDecrypterMethodInfo(methodToken, false));
+					infos.Add(new StringDecrypterMethodInfo(methodToken));
 					continue;
 				}
 				infos.AddRange(FindMethodInfos(val));
@@ -520,7 +520,7 @@ namespace de4dot.code {
 					}
 
 					Logger.v("Adding string decrypter; token: {0:X8}, method: {1}", method.MDToken.ToInt32(), Utils.RemoveNewlines(method.FullName));
-					infos.Add(new StringDecrypterMethodInfo(method.MDToken.ToInt32(), false));
+					infos.Add(new StringDecrypterMethodInfo(method.MDToken.ToInt32()));
 				}
 			}
 

@@ -245,7 +245,7 @@ namespace de4dot.code.deobfuscators {
 		public abstract IEnumerable<int> GetStringDecrypterMethods();
 
 		public virtual IEnumerable<StringDecrypterMethodInfo> GetStringDecrypterMethodInfos() {
-			return GetStringDecrypterMethods().Select(token => new StringDecrypterMethodInfo(token, false));
+			return GetStringDecrypterMethods().Select(token => new StringDecrypterMethodInfo(token));
 		}
 
 		class MethodCallRemover {

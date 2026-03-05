@@ -98,7 +98,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 		byte[] fileData;
 		MethodsDecrypter methodsDecrypter;
 		StringDecrypter stringDecrypter;
-		GenericStringDecrypter genericStringDecrypter;
+		GenericConstantDecrypter genericConstantDecrypter;
+		GenericConstantInliner genericConstantInliner;
 		BooleanDecrypter booleanDecrypter;
 		BooleanValueInliner booleanValueInliner;
 		MetadataTokenObfuscator metadataTokenObfuscator;
@@ -233,8 +234,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			stringDecrypter = new StringDecrypter(module);
 			stringDecrypter.Find(DeobfuscatedFile);
 			// Scan for v6.x generic constant decrypter methods: !!0 Method<T>(int32)
-			genericStringDecrypter = new GenericStringDecrypter(module);
-			genericStringDecrypter.Find();
+			genericConstantDecrypter = new GenericConstantDecrypter(module);
+			genericConstantDecrypter.Find();
 			booleanDecrypter = new BooleanDecrypter(module);
 			booleanDecrypter.Find();
 			assemblyResolver = new AssemblyResolver(module);
@@ -443,8 +444,8 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			newOne.proxyCallFixer = new ProxyCallFixer(module, proxyCallFixer);
 			newOne.stringDecrypter = new StringDecrypter(module, stringDecrypter);
 			// Re-detect generic decrypter methods in the reloaded module (new metadata tokens)
-			newOne.genericStringDecrypter = new GenericStringDecrypter(module);
-			newOne.genericStringDecrypter.Find();
+			newOne.genericConstantDecrypter = new GenericConstantDecrypter(module);
+			newOne.genericConstantDecrypter.Find();
 			newOne.booleanDecrypter = new BooleanDecrypter(module, booleanDecrypter);
 			newOne.assemblyResolver = new AssemblyResolver(module, assemblyResolver);
 			newOne.resourceResolver = new ResourceResolver(module, resourceResolver);
@@ -524,12 +525,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 			proxyCallFixer.Find();
 			proxyCallFixer.DeobfuscateAll();
 
-			// Initialize generic string decrypter AFTER proxy call resolution (proxyCallFixer above).
+			// Initialize generic constant decrypter AFTER proxy call resolution (proxyCallFixer above).
 			// Uses Assembly.Load() to dynamically load the assembly, triggering the .cctor which
 			// initializes the runtime byte[] data field via XorShift PRNG + block XOR decryption.
 			// The field value is then read via reflection (Module.ResolveField).
-			if (genericStringDecrypter.Detected)
-				genericStringDecrypter.Initialize(fileData ?? DeobUtils.ReadModule(module));
+			if (genericConstantDecrypter.Detected)
+				genericConstantDecrypter.Initialize(fileData ?? DeobUtils.ReadModule(module));
 
 			var cflowInliner = new CflowConstantsInliner(module, DeobfuscatedFile);
 			cflowInliner.InlineAllConstants();
@@ -562,13 +563,17 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 					});
 				}
 			}
-			// Register generic decrypter methods with the static string inliner.
-			// Each call like Method<string>(193412188) will be resolved to a decrypted string
-			// using the per-method MUL/XOR constants and the shared runtime byte[] data.
-			if (genericStringDecrypter.Initialized) {
-				foreach (var dm in genericStringDecrypter.DecrypterMethods) {
+			// Register generic decrypter methods with both string and constant inliners.
+			// Method<string>(...) calls are handled by the string inliner; non-string calls
+			// (Method<int[]>(...), Method<float[]>(...), etc.) by the constant inliner.
+			if (genericConstantDecrypter.Initialized) {
+				genericConstantInliner = new GenericConstantInliner(module, initializedDataCreator);
+				foreach (var dm in genericConstantDecrypter.DecrypterMethods) {
 					staticStringInliner.Add(dm.method, (method2, gim, args) => {
-						return genericStringDecrypter.Decrypt(method2, (int)args[0]);
+						return genericConstantDecrypter.Decrypt(method2, (int)args[0]);
+					});
+					genericConstantInliner.Add(dm.method, (method2, gim, args) => {
+						return genericConstantDecrypter.DecryptConstant(method2, gim, (int)args[0]);
 					});
 				}
 			}
@@ -754,7 +759,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 				list.Add(info.method.MDToken.ToInt32());
 			if (stringDecrypter.OtherStringDecrypter != null)
 				list.Add(stringDecrypter.OtherStringDecrypter.MDToken.ToInt32());
-			foreach (var dm in genericStringDecrypter.DecrypterMethods)
+			foreach (var dm in genericConstantDecrypter.DecrypterMethods)
 				list.Add(dm.method.MDToken.ToInt32());
 			return list;
 		}
