@@ -19,6 +19,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 using de4dot.code.AssemblyClient;
@@ -33,7 +34,7 @@ namespace de4dot.code {
 		/// </summary>
 		protected static bool IsGenericStringInstantiation(MethodSpec gim) {
 			var gims = gim?.GenericInstMethodSig;
-			if (gims == null || gims.GenericArguments.Count != 1)
+			if (gims is null || gims.GenericArguments.Count != 1)
 				return false;
 			var ga = gims.GenericArguments[0];
 			return ga is { ElementType: ElementType.String };
@@ -44,8 +45,7 @@ namespace de4dot.code {
 				var block = callResult.block;
 				int num = callResult.callEndIndex - callResult.callStartIndex + 1;
 
-				var decryptedString = callResult.returnValue as string;
-				if (decryptedString == null)
+				if (callResult.returnValue is not string decryptedString)
 					continue;
 
 				int ldstrIndex = callResult.callStartIndex;
@@ -106,7 +106,7 @@ namespace de4dot.code {
 		}
 
 		protected override CallResult CreateCallResult(IMethod method, MethodSpec gim, Block block, int callInstrIndex) {
-			if (gim != null && !IsGenericStringInstantiation(gim))
+			if (gim is not null && !IsGenericStringInstantiation(gim))
 				return null;
 			if (!TryGetMethodId(method, out int methodId))
 				return null;
@@ -119,7 +119,7 @@ namespace de4dot.code {
 			if (methodTokenToId.TryGetValue(methodToken, out methodId))
 				return true;
 			var resolved = (method as IMethodDefOrRef)?.ResolveMethodDef();
-			if (resolved == null)
+			if (resolved is null)
 				return false;
 			methodToken = resolved.MDToken.ToInt32();
 			return methodTokenToId.TryGetValue(methodToken, out methodId);
@@ -127,8 +127,8 @@ namespace de4dot.code {
 
 		protected override void InlineAllCalls() {
 			var sortedCalls = new Dictionary<int, List<MyCallResult>>();
-			foreach (var tmp in callResults) {
-				var callResult = (MyCallResult)tmp;
+			foreach (var callResult in callResults.Cast<MyCallResult>())
+			{
 				if (!sortedCalls.TryGetValue(callResult.methodId, out var list))
 					sortedCalls[callResult.methodId] = list = new List<MyCallResult>(callResults.Count);
 				list.Add(callResult);
@@ -168,7 +168,7 @@ namespace de4dot.code {
 		}
 
 		public void Add(MethodDef method, Func<MethodDef, MethodSpec, object[], string> handler) {
-			if (method != null)
+			if (method is not null)
 				stringDecrypters.Add(method, handler);
 		}
 
@@ -181,15 +181,15 @@ namespace de4dot.code {
 		}
 
 		protected override CallResult CreateCallResult(IMethod method, MethodSpec gim, Block block, int callInstrIndex) {
-			if (gim != null && !IsGenericStringInstantiation(gim))
+			if (gim is not null && !IsGenericStringInstantiation(gim))
 				return null;
 			var handler = stringDecrypters.Find(method);
-			if (handler == null) {
+			if (handler is null) {
 				var resolved = (method as IMethodDefOrRef)?.ResolveMethodDef();
-				if (resolved == null)
+				if (resolved is null)
 					return null;
 				handler = stringDecrypters.Find(resolved);
-				if (handler == null)
+				if (handler is null)
 					return null;
 				method = resolved;
 			}
