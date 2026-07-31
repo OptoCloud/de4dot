@@ -129,8 +129,9 @@ Run order and each gate's blind spot: ROADMAP §4.
 - [ ] **23.** `dead_exit_constant_states` fails: `StateMachineTracer` no longer logs "Dispatch
   resolution rejected" for a machine whose feeders are all constants and none is the exit index.
   Pre-existing on master and unrelated to #22 — it was masked until the harness stopped running a
-  stale net8.0 de4dot and started fetching ildasm. Either the tracer regressed or its message moved;
-  find out which before touching the fixture. ROADMAP §7a.
+  stale net8.0 de4dot and started fetching ildasm. The same fixture and the same commits pass on
+  `upstream-pr` (14/14 there, 13/14 here), so this is a master-only divergence and diffing the two
+  trees' Reactor v4 folders is the place to start. ROADMAP §7a.
 
 Add new work here rather than reopening a closed item; if a closed finding turns out to be
 wrong, correct the ROADMAP section that owns it and open a fresh entry pointing at it.
