@@ -1397,6 +1397,51 @@ counts as "not written" is not.
 
 ---
 
+## 7c. Folding the call-based opaque predicate
+
+The other half of the same shape. §7b removes the pairs nothing calls; this is what to do when the
+predicate *is* called — `call bool P(); brtrue/brfalse`, fall-through starting with `pop`, in front
+of a dispatcher. `DotNetReactorCflowDeobfuscator` replaces the call with a constant, which makes one
+successor unreachable.
+
+What it used to do was read the callee's penultimate instruction and call anything that was not
+`ldc.i4.0` true. That is not a proof, and it is wrong in both directions:
+
+- `return x > 0` compiles to `cgt; ret`, so an ordinary method in this position folded to `true` and
+  its real branch was deleted. Reactor's own `bool BooleanDecrypter(int)` has the same property.
+- `ldnull; ret` and `ldsfld F; ret` also fold to `true` under that rule, when the value they yield is
+  the one that does *not* take a `brtrue`.
+- A non-`bool` callee was replaced by `ldc.i4.0` unconditionally, side effects and all, and
+  `method.Body` was dereferenced without a null check, so an extern or abstract callee lost the whole
+  enclosing method to the "could not deobfuscate" handler.
+
+None of that shows up in any gate. The output still verifies and still terminates; a live arm is
+simply gone — the failure §2 names as the one the metric cannot see.
+
+So the callee is read in full and folded only when every path yields the same constant:
+`ldc.i4 X; ret`, a return of something provably null, or a comparison of two provably-null operands.
+It must also take no arguments and have no `this`, because the call is replaced by a single push and
+anything it would have popped is left stranded on the stack.
+
+**"Provably null" is `NeverWrittenStaticFields`, which both passes now share.** It answers one
+question — is this static reference field one that nothing assigns — under the write rule §7b ends
+on, and that rule now has a single implementation instead of a copy in each pass. The copies had
+already diverged: this one counted only `stsfld`, so a field assigned through `ldsflda` or handed to
+reflection read as never-written. It also resolves `MemberRef` field operands, fails closed on a
+field reference into this assembly that will not resolve, and refuses any field something outside the
+module could reach.
+
+Scanning is deferred to the first fold candidate. The site is rare, the scan is module-wide, and the
+pass is constructed fresh per `simpleDeobfuscator.Deobfuscate` call; eager scanning made that
+quadratic. The cache is per-instance so it cannot outlive the pipeline phase that built it.
+
+Bisect lever: `DE4DOT_NO_PREDICATE_FOLD=1`. Fixtures: `opaque_fold`, `opaque_real_computation` and
+`opaque_field_written_by_address` in `tests/run_reactor_tests.py` — a fold, the `return x > 0` that
+must not fold, and a field written only through its address. **Corpus acceptance has not been run
+yet** (WORKLOG #22).
+
+---
+
 ## 8. History: the net8.0 pin and the extraction worker
 
 Closed, but the invariant at the end of this section is live.

@@ -119,5 +119,18 @@ Run order and each gate's blind spot: ROADMAP §4.
   unknown index must not leave a readable constant, `newarr` zero-seeding must survive a modelled
   store, and a non-int32 array must not be tracked at all. ROADMAP §3 #7.
 
+- [ ] **22.** Corpus-measure the call-based opaque-predicate fold. The rewrite is in and fixtured, but
+  nothing has been run against S1/S2/S3, and the fold both widens (`ldsfld` predicates) and narrows
+  (anything not provably constant) what the old heuristic touched — so it can move line counts in
+  either direction. Bisect with `DE4DOT_NO_PREDICATE_FOLD=1` and check gates 1-3 first: a wrong fold
+  deletes a live arm without failing any of them, so the fixtures are the only detector and the gates
+  only rule out the coarser damage. ROADMAP §7c.
+
+- [ ] **23.** `dead_exit_constant_states` fails: `StateMachineTracer` no longer logs "Dispatch
+  resolution rejected" for a machine whose feeders are all constants and none is the exit index.
+  Pre-existing on master and unrelated to #22 — it was masked until the harness stopped running a
+  stale net8.0 de4dot and started fetching ildasm. Either the tracer regressed or its message moved;
+  find out which before touching the fixture. ROADMAP §7a.
+
 Add new work here rather than reopening a closed item; if a closed finding turns out to be
 wrong, correct the ROADMAP section that owns it and open a fresh entry pointing at it.
