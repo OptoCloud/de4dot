@@ -127,12 +127,17 @@ Run order and each gate's blind spot: ROADMAP §4.
   decline reason for that method, and either widen the shape or record why the field is not
   vouched for. Bisect with `DE4DOT_NO_PREDICATE_FOLD=1`. ROADMAP §7c.
 
-- [ ] **23.** `dead_exit_constant_states` fails: `StateMachineTracer` no longer logs "Dispatch
-  resolution rejected" for a machine whose feeders are all constants and none is the exit index.
-  Pre-existing on master and unrelated to #22 — it was masked until the harness stopped running a
-  stale net8.0 de4dot and started fetching ildasm. The same fixture and the same commits pass on
-  `upstream-pr` (14/14 there, 13/14 here), so this is a master-only divergence and diffing the two
-  trees' Reactor v4 folders is the place to start. ROADMAP §7a.
+- [ ] **23.** `dead_exit_constant_states` asserts the wrong refusal on master. The fixture expects
+  "Dispatch resolution rejected" from the non-termination proof, and master instead logs *"skipping 4
+  edge(s) — the rewrite would orphan the method's only exit"*. Both are refusals and both are
+  correct; the orphan-exit guard simply reaches this shape first, because master's tracer is the
+  stricter one — it gained the `incomplete` flag, handler-aware exit detection and the branch-
+  emulation fix that `upstream-pr` does not have, and one of those stops the machine being proven
+  non-terminating before the tracer can say so. Not a regression: the fixture pins the *message* of
+  whichever guard happens to win, which is exactly the brittleness the harness docstring warns
+  against. Decide which refusal this fixture is meant to be about and assert that one, or assert that
+  the dispatch survived without naming the guard. Masked until the harness stopped running a stale
+  net8.0 de4dot. ROADMAP §7a.
 
 Add new work here rather than reopening a closed item; if a closed finding turns out to be
 wrong, correct the ROADMAP section that owns it and open a fresh entry pointing at it.
