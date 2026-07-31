@@ -119,12 +119,13 @@ Run order and each gate's blind spot: ROADMAP §4.
   unknown index must not leave a readable constant, `newarr` zero-seeding must survive a modelled
   store, and a non-int32 array must not be tracked at all. ROADMAP §3 #7.
 
-- [ ] **22.** Corpus-measure the call-based opaque-predicate fold. The rewrite is in and fixtured, but
-  nothing has been run against S1/S2/S3, and the fold both widens (`ldsfld` predicates) and narrows
-  (anything not provably constant) what the old heuristic touched — so it can move line counts in
-  either direction. Bisect with `DE4DOT_NO_PREDICATE_FOLD=1` and check gates 1-3 first: a wrong fold
-  deletes a live arm without failing any of them, so the fixtures are the only detector and the gates
-  only rule out the coarser damage. ROADMAP §7c.
+- [ ] **22.** Re-measure the call-based opaque-predicate fold now that refusals name their cause. The
+  first run is done and the result is faithful — one method in each of two builds loses a resolution,
+  gates green, nothing corrupted — but the predicate it gave up on is one §7c claims: `return F ==
+  null` on a never-written internal static. A fixture built to that description folds, so the corpus
+  has something the fixtures do not, and until this run the pass could not say what. Re-run, read the
+  decline reason for that method, and either widen the shape or record why the field is not
+  vouched for. Bisect with `DE4DOT_NO_PREDICATE_FOLD=1`. ROADMAP §7c.
 
 - [ ] **23.** `dead_exit_constant_states` fails: `StateMachineTracer` no longer logs "Dispatch
   resolution rejected" for a machine whose feeders are all constants and none is the exit index.

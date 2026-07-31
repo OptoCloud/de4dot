@@ -1435,10 +1435,33 @@ Scanning is deferred to the first fold candidate. The site is rare, the scan is 
 pass is constructed fresh per `simpleDeobfuscator.Deobfuscate` call; eager scanning made that
 quadratic. The cache is per-instance so it cannot outlive the pipeline phase that built it.
 
-Bisect lever: `DE4DOT_NO_PREDICATE_FOLD=1`. Fixtures: `opaque_fold`, `opaque_real_computation` and
-`opaque_field_written_by_address` in `tests/run_reactor_tests.py` — a fold, the `return x > 0` that
-must not fold, and a field written only through its address. **Corpus acceptance has not been run
-yet** (WORKLOG #22).
+Bisect lever: `DE4DOT_NO_PREDICATE_FOLD=1`. Fixtures: `opaque_fold`, `opaque_field_compare_null`,
+`opaque_real_computation` and `opaque_field_written_by_address` in `tests/run_reactor_tests.py` — a
+fold on a private field, the same fold on an internal one, the `return x > 0` that must not fold, and
+a field written only through its address.
+
+### Corpus acceptance, and the gap it exposed
+
+Faithful, and safe to land. Two builds of one target change, and in each the change is confined to a
+single method: a `foreach` that previously decompiled cleanly becomes an unresolved
+`while (true) { switch }`. Gate 5 reports non-terminating 0 — unresolved but faithful, undecidable
++1 per build — and gates 1 and 7, the other target-internal counts, and the type check are all
+unchanged. Nothing is corrupted; a resolution is forfeited.
+
+The forfeited predicate is one this section claims to handle. It is `return F == null` with `F` an
+assembly-visible static that no write in the module touches, in an assembly with no
+`InternalsVisibleTo` — the "comparison of two provably-null operands" case exactly. A fixture built
+to that description folds, so the refusal is something the corpus has that the fixtures do not.
+
+Which is the real defect: **the pass could not say why it refused.** It logged that the callee was
+not provably constant and stopped there, leaving the reason to be inferred from three candidates —
+the shape, the visibility rule, or the write scan. Every refusal now names its cause, and the two
+refusal fixtures assert the cause rather than the refusal, so an attribution that stops being true
+fails a fixture. One over-broad rule was found and fixed in the process: a single field reference
+that would not resolve used to abandon the scan for the whole module, forfeiting every fold in the
+assembly; it now refuses only the field name that reference could denote.
+
+Re-running the corpus with the reasons in hand is what closes this — WORKLOG #22.
 
 ---
 
