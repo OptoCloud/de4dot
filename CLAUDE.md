@@ -35,8 +35,18 @@ behaviour rather than saying "the output moved". It covers the XorSwitch dispatc
 module-constant fold, including the latter's refusal path — which the corpus cannot reach, because
 there the premise always holds.
 
-There is no unit test project (xUnit/NUnit/MSTest). Automated coverage is IL-based integration tests:
-`tests/samples/inlining/` (assembled and byte-compared by `test.ps1`) and `tests/run_reactor_tests.py`.
+Automated coverage is in three places, and most of it is IL-based integration tests rather than unit
+tests, because most of what can go wrong here is a pass deciding something wrong about real IL:
+
+- `tests/run_reactor_tests.py` — the portable one, described above.
+- `tests/samples/inlining/` — assembled and byte-compared by `test.ps1`, with the caveats above.
+- `tests/de4dot.Tests/` (xUnit) — unit tests over the shared cflow value model. Note it can only
+  reach public API: `de4dot.code` grants no `InternalsVisibleTo`, so an `internal` pass is not
+  testable from here without adding one.
+
+Upstream has since added `de4dot.blocks.tests/` (MSTest, run via `dotnet test`), which covers the
+same shared emulator surface as `tests/de4dot.Tests/`. Two frameworks testing one component is a
+merge artefact, not a decision — when they next collide, keep one.
 
 ## Architecture
 
