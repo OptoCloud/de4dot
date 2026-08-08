@@ -466,12 +466,12 @@ namespace de4dot.code {
 
 		IEnumerable<StringDecrypterMethodInfo> GetMethodInfos() {
 			if (!userStringDecrypterMethods) {
-				// A deobfuscator that does not provide the richer form is not broken, just older —
+				// A deobfuscator that does not provide the richer form is not broken, just older --
 				// wrap its tokens. See IStringDecrypterMethodInfoProvider for why this is a test
 				// rather than a member on IDeobfuscator.
-				return deob is IStringDecrypterMethodInfoProvider provider
-					? provider.GetStringDecrypterMethodInfos()
-					: deob.GetStringDecrypterMethods().Select(token => new StringDecrypterMethodInfo(token));
+				if (deob is IStringDecrypterMethodInfoProvider provider)
+					return provider.GetStringDecrypterMethodInfos();
+				return deob.GetStringDecrypterMethods().Select(token => new StringDecrypterMethodInfo(token));
 			}
 
 			var infos = new List<StringDecrypterMethodInfo>();

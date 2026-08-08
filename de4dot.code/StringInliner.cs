@@ -112,8 +112,7 @@ namespace de4dot.code {
 			foreach (var info in methodInfos) {
 				if (methodTokenToId.ContainsKey(info.MethodToken))
 					continue;
-				int methodId = assemblyClient.StringDecrypterService.DefineStringDecrypter(info.MethodToken);
-				methodTokenToId[info.MethodToken] = methodId;
+				methodTokenToId[info.MethodToken] = assemblyClient.StringDecrypterService.DefineStringDecrypter(info.MethodToken);
 			}
 		}
 
