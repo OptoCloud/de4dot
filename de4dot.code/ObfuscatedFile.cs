@@ -494,12 +494,12 @@ namespace de4dot.code {
 				foreach (var method in type.Methods) {
 					if (!method.IsStatic)
 						continue;
-					// GetElementType() is the null-safe extension: a MethodSig can carry a null RetType
-					// when the signature blob was truncated or nested past dnlib's recursion limit,
-					// which is a thing obfuscators emit deliberately. Reading .ElementType directly
-					// turns that into an NRE that aborts the whole scan.
-					if (method.MethodSig.GetRetType().GetElementType() != ElementType.String &&
-						method.MethodSig.GetRetType().GetElementType() != ElementType.Object)
+					// A MethodSig can carry a null RetType when the signature blob was truncated or
+					// nested past dnlib's recursion limit, which is a thing obfuscators emit
+					// deliberately. Reading .ElementType off it turns that into an NRE that aborts
+					// the whole scan, so null-check both the sig and the return type first.
+					var ret = method.MethodSig?.GetRetType();
+					if (ret == null || (ret.ElementType != ElementType.String && ret.ElementType != ElementType.Object))
 						continue;
 					if (methodName != null && methodName != method.Name)
 						continue;
