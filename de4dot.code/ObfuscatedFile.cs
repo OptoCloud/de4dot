@@ -339,9 +339,6 @@ namespace de4dot.code {
 		/// </summary>
 		private Dictionary<string, MethodDef> inlineCandidate;
 		public void DeobfuscateBegin() {
-			// Find all inline candidate methods: static methods whose body is exactly
-			// ldarg_0, ldarg_1, ..., ldarg_N, call/callvirt/newobj <target>, ret.
-			// These are proxy wrappers that just forward arguments to another method.
 			inlineCandidate = new();
 			foreach (var m in GetAllMethods().Where(_ => _.HasBody && _.Body.HasInstructions)) {
 				if (m.IsStatic && m.Parameters.Count + 2 == m.Body.Instructions.Count) {
