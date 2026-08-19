@@ -8,8 +8,6 @@
     <PackageVersion Include="System.Drawing.Common" Version="10.0.7" />
     <!-- Test-only -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
-    <PackageVersion Include="xunit" Version="2.9.2" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageVersion Include="AndreasDorfer.FsCheck.MSTest" Version="3.0.0" />
     <PackageVersion Include="MSTest.Analyzers" Version="4.3.3" />
     <PackageVersion Include="MSTest.TestAdapter" Version="4.3.3" />
