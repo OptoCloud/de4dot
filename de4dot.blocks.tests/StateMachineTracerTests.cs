@@ -21,9 +21,9 @@ using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 using de4dot.blocks;
 using de4dot.blocks.cflow;
-using Xunit;
 
-namespace de4dot.tests {
+
+namespace de4dot.blocks.tests {
 	/// <summary>
 	///     <see cref="StateMachineTracer"/> verdicts.
 	///
@@ -34,13 +34,14 @@ namespace de4dot.tests {
 	///     throwing a rewrite away — so a <c>Loops</c> reached by NARROWING the set silently discards
 	///     correct deobfuscation.
 	/// </summary>
-	public class StateMachineTracerTests {
+	[TestClass]
+	public sealed class StateMachineTracerTests {
 		static StateMachineTracerResult Trace(MethodDef method) =>
 			StateMachineTracer.Trace(new Blocks(method), method).Verdict;
 
 		static void AssertNotLoops(MethodDef method, string why) {
 			var verdict = Trace(method);
-			Assert.True(verdict != StateMachineTracerResult.Loops,
+			Assert.IsTrue(verdict != StateMachineTracerResult.Loops,
 				$"got Loops, but {why}. A Loops verdict is treated as a proof and discards the rewrite.");
 		}
 
@@ -48,7 +49,7 @@ namespace de4dot.tests {
 		///     A dispatch that selects a returning arm. The baseline: the tracer must not call this
 		///     non-terminating.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void ADispatchSelectingAReturningArmIsNotLoops() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Locals: 1);
@@ -67,7 +68,7 @@ namespace de4dot.tests {
 			AssertNotLoops(method, "state 1 selects the arm that returns");
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AGenuinelyNonTerminatingMachineIsLoops() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Locals: 1);
@@ -84,7 +85,7 @@ namespace de4dot.tests {
 				dispatch, sw,
 				spin, IL.Ldc(0), IL.Stloc(local), OpCodes.Br.ToInstruction(dispatch),
 				ret);
-			Assert.Equal(StateMachineTracerResult.Loops, Trace(method));
+			Assert.AreEqual(StateMachineTracerResult.Loops, Trace(method));
 		}
 
 		/// <summary>
@@ -92,7 +93,7 @@ namespace de4dot.tests {
 		///     track must read as UNKNOWN — if they read as a fabricated zero, the switch prunes to
 		///     arm 0 and the machine looks non-terminating.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void AStateVariableAboveTheTrackedLocalCeilingIsNotLoops() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Locals: 20);
@@ -117,7 +118,7 @@ namespace de4dot.tests {
 		///     stepped over, exactly as the switch operand does. Leaving them behind shifts every
 		///     successor's stack, so a later switch reads the wrong slot as its operand.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void AConditionalBranchDoesNotLeaveItsOperandOnTheStack() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module);
@@ -141,7 +142,7 @@ namespace de4dot.tests {
 				"predicate, so the returning arm is selected");
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AnUnknownSwitchOperandExploresEveryArm() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Params: 1);

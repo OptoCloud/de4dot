@@ -802,14 +802,14 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v4 {
 					}
 
 					switch (trace.Verdict) {
-					case StateMachineVerdict.Loops:
+					case StateMachineTracerResult.Loops:
 						loops++;
 						Logger.Instance.Log(false, null, LoggerEvent.Warning,
 						"Non-terminating dispatch in {0} (states {1}) -- a switch was resolved to "
 							+ "the wrong target, so statements past it are unreachable and absent from the "
 							+ "output", Utils.RemoveNewlines(method), string.Join(" -> ", trace.States));
 						break;
-					case StateMachineVerdict.ExitReachable:
+					case StateMachineTracerResult.ExitReachable:
 						exitReachable++;
 						break;
 					default:
