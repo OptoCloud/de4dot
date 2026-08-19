@@ -145,7 +145,7 @@ namespace AssemblyData.methodsrewriter {
 			if (typeRef is not TypeSig sig) {
 				sig = (typeRef as TypeSpec)?.TypeSig;
 			}
-			
+
 			while (sig is not null) {
 				switch (sig.ElementType) {
 				case ElementType.SZArray:

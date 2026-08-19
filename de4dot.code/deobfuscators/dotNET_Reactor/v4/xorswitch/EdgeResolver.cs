@@ -136,11 +136,11 @@ class EdgeResolver {
 			seen.Add(_dispatch.HeaderBlock);
 
 		var result = _dispatch.SwitchBlock.Sources.Where(pred => seen.Add(pred)).ToList();
-		
+
 		if (_dispatch.HeaderBlock is not null) {
 			result.AddRange(_dispatch.HeaderBlock.Sources.Where(pred => seen.Add(pred)));
 		}
-		
+
 		return result;
 	}
 
@@ -206,7 +206,7 @@ class EdgeResolver {
 			foreach (var pred in GetDispatchPredecessors()) {
 				if (resolved.Contains(pred))
 					continue;
-				
+
 				if (pred.LastInstr.OpCode.Code == Code.Switch)
 					continue;
 
@@ -221,11 +221,11 @@ class EdgeResolver {
 					foundNew = true;
 					continue;
 				}
-				
+
 				if (IsConditionalPredecessor(pred)) {
 					var condEdges = TryResolveConditionalEdge(pred);
 					if (condEdges is not { Count: > 0 }) continue;
-					
+
 					edges.AddRange(condEdges);
 					resolved.Add(pred);
 					ResolvedCount += condEdges.Count;
