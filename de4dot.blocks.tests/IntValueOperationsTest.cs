@@ -42,14 +42,38 @@ namespace de4dot.blocks.tests {
 				Int32Value.Shr_Un(Known(unchecked((int)0x80000000u)), Known(count)));
 		}
 
+		/// <summary>
+		/// The counterpart to <see cref="ShiftsInRangeAreComputed"/>. A count at or past the operand
+		/// width leaves the result unspecified in CIL, so the only answer true on every conforming
+		/// runtime is to refuse. Agreeing with x64's masking would be agreeing with one
+		/// implementation rather than the spec.
+		/// </summary>
 		[TestMethod]
-		[DataRow(32, 43, 43)]
-		[DataRow(64, 43, 43)]
-		[DataRow(-1, -2147483648, 0)]
-		[DataRow(int.MinValue, 43, 43)]
-		public void ShiftsOutOfRangeAreKnown(int count, int expectedl, int expectedr) {
-			AssertKnown(expectedl, Int32Value.Shl(Known(43), Known(count)));
-			AssertKnown(expectedr, Int32Value.Shr(Known(43), Known(count)));
+		[DataRow(32)]
+		[DataRow(64)]
+		[DataRow(-1)]
+		[DataRow(int.MinValue)]
+		public void ShiftsOutOfRangeAreUnknown(int count) {
+			AssertUnknown(Int32Value.Shl(Known(43), Known(count)));
+			AssertUnknown(Int32Value.Shr(Known(43), Known(count)));
+			AssertUnknown(Int32Value.Shr_Un(Known(43), Known(count)));
+		}
+
+		/// <summary>
+		/// Why the guard is a correctness requirement and not just conservatism. Masking the count
+		/// instead makes a nonzero multiple of the width shift by zero, and the mask arithmetic then
+		/// evaluates <c>uint.MaxValue >> (width - 0)</c>. C# masks that count back to zero, so it
+		/// yields all-ones rather than zero and every bit reads as known: an operand with unknown
+		/// bits is reported as a hard constant. Both directions have a way in -- Shl through the
+		/// low-bit fill, Shr through sign extension -- so both are pinned here.
+		/// </summary>
+		[TestMethod]
+		[DataRow(32)]
+		[DataRow(64)]
+		public void AnOutOfRangeCountMustNotInventKnownBits(int count) {
+			AssertUnknown(Int32Value.Shl(Unknown(), Known(count)));
+			var signBitOnly = Int32Value.Or(Unknown(), Known(unchecked((int)0x80000000u)));
+			AssertUnknown(Int32Value.Shr(signBitOnly, Known(count)));
 		}
 
 		[TestMethod]
@@ -141,12 +165,27 @@ namespace de4dot.blocks.tests {
 
 
 
+		/// <summary>The int64 form of <see cref="Int32ValueOperationsTest.ShiftsOutOfRangeAreUnknown"/>.</summary>
 		[TestMethod]
 		[DataRow(64)]
 		[DataRow(128)]
-		public void ShiftsOutOfRangeAreKnown(int count) {
-			AssertKnown(43, Int64Value.Shr(Known(43), Count(count)));
-			AssertKnown(43, Int64Value.Shr(Known(43), Count(count)));
+		public void ShiftsOutOfRangeAreUnknown(int count) {
+			AssertUnknown(Int64Value.Shl(Known(43), Count(count)));
+			AssertUnknown(Int64Value.Shr(Known(43), Count(count)));
+			AssertUnknown(Int64Value.Shr_Un(Known(43), Count(count)));
+		}
+
+		/// <summary>
+		/// The int64 form of
+		/// <see cref="Int32ValueOperationsTest.AnOutOfRangeCountMustNotInventKnownBits"/>.
+		/// </summary>
+		[TestMethod]
+		[DataRow(64)]
+		[DataRow(128)]
+		public void AnOutOfRangeCountMustNotInventKnownBits(int count) {
+			AssertUnknown(Int64Value.Shl(Unknown(), Count(count)));
+			var signBitOnly = Int64Value.Or(Unknown(), Known(unchecked((long)0x8000000000000000UL)));
+			AssertUnknown(Int64Value.Shr(signBitOnly, Count(count)));
 		}
 
 		[TestMethod]
