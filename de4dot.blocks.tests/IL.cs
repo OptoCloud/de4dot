@@ -22,7 +22,7 @@ using System.Collections.Generic;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 
-namespace de4dot.tests {
+namespace de4dot.blocks.tests {
 	/// <summary>
 	///     Builds throwaway in-memory assemblies to run passes against.
 	///
