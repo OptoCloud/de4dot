@@ -403,9 +403,11 @@ namespace de4dot.blocks.cflow {
 		public static Int64Value Shr(Int64Value a, Int32Value b) {
 			if (b.HasUnknownBits())
 				return CreateUnknown();
+			if ((uint)b.Value >= sizeof(long) * 8)
+				return CreateUnknown();
 			if (b.Value == 0)
 				return a;
-			int shift = b.Value & 63;
+			int shift = b.Value;
 			ulong validMask = a.ValidMask >> shift;
 			if (a.IsBitValid(sizeof(long) * 8 - 1))
 				validMask |= (ulong.MaxValue << (sizeof(long) * 8 - shift));

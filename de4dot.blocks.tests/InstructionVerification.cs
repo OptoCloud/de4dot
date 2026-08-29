@@ -56,10 +56,32 @@ namespace de4dot.blocks.tests {
 			var blocks = new Blocks(methodDef);
 			emulator.Emulate(blocks.MethodBlocks.GetAllBlocks()[0].Instructions);
 			var emulatedValue = (Int32Value)emulator.Pop();
+
+			if (IsUnspecified(opCode, b)) {
+				// The runtime is not ground truth here: this host masks the shift count, but that is
+				// one legal outcome of an operation the spec declines to define, not the answer. The
+				// emulator has to decline as well -- folding to whatever this machine happens to do
+				// would bake a host-specific constant into a rewritten method.
+				Assert.IsTrue(emulatedValue.HasUnknownBits(),
+					$"'{a} {opCode} {b}' is unspecified in CIL, so the emulator must not fold it; it produced {emulatedValue.Value}");
+				return;
+			}
+
 			Assert.IsFalse(emulatedValue.HasUnknownBits(), $"The emulated result of expression '{a} {opCode} {b}' should be known");
 			var actualValue = emulatedValue.Value;
 			Assert.AreEqual(expectedValue, actualValue, $"The emulated result of expression '{a} {opCode} {b}' should match the runtime value");
 		}
+
+		/// <summary>
+		/// ECMA-335 III.3.58-3.60: the result of <c>shl</c>/<c>shr</c>/<c>shr.un</c> is unspecified
+		/// once the shift amount reaches the width of the shifted value. The unsigned compare folds
+		/// the negative counts into the same test. Nothing else reachable here is unspecified for two
+		/// int32 operands -- <c>rem.un</c> by zero throws rather than being undefined, and is
+		/// excluded from the generated set.
+		/// </summary>
+		static bool IsUnspecified(OpCode opCode, int shiftAmount) =>
+			(opCode == OpCodes.Shl || opCode == OpCodes.Shr || opCode == OpCodes.Shr_Un) &&
+			(uint)shiftAmount >= sizeof(int) * 8;
 
 #if !NETFRAMEWORK
 		/// <summary>
