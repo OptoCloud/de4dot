@@ -20,9 +20,9 @@
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 using de4dot.blocks.cflow;
-using Xunit;
 
-namespace de4dot.tests {
+
+namespace de4dot.blocks.tests {
 	/// <summary>
 	///     The emulator's <c>newarr</c>/<c>stelem</c>/<c>ldelem</c> element tracking.
 	///
@@ -33,7 +33,8 @@ namespace de4dot.tests {
 	///     it downstream. The invariant these tests defend is that the emulator never reports a
 	///     constant real execution could contradict; being less precise is always allowed.
 	/// </summary>
-	public class InstructionEmulatorArrayTests {
+	[TestClass]
+	public sealed class InstructionEmulatorArrayTests {
 		static Value RunAndPop(MethodDef method, params Instruction[] instructions) {
 			var emulator = new InstructionEmulator();
 			emulator.Initialize(method, false);
@@ -52,17 +53,17 @@ namespace de4dot.tests {
 		}
 
 		static void AssertKnown(int expected, Value value) {
-			Assert.True(IsKnown(value, out int actual), $"expected the known constant {expected}, got {value}");
-			Assert.Equal(expected, actual);
+			Assert.IsTrue(IsKnown(value, out int actual), $"expected the known constant {expected}, got {value}");
+			Assert.AreEqual(expected, actual);
 		}
 
 		static void AssertUnknown(Value value) {
-			Assert.False(IsKnown(value, out int actual),
+			Assert.IsFalse(IsKnown(value, out int actual),
 				$"expected an unknown value, got the constant {actual} — the emulator is claiming to know " +
 				"something real execution can contradict");
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AModelledStoreIsReadBack() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module);
@@ -72,7 +73,7 @@ namespace de4dot.tests {
 				IL.Ldc(0), IL.Op(OpCodes.Ldelem_I4)));
 		}
 
-		[Fact]
+		[TestMethod]
 		public void UnwrittenElementsAreZeroBecauseNewarrZeroInitializes() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module);
@@ -86,7 +87,7 @@ namespace de4dot.tests {
 		///     could not place was skipped instead of invalidating, so the element kept the value an
 		///     earlier store had put there and was read back as fact.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void AStoreAtAnUnknownIndexInvalidatesTheWholeArray() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Params: 1);
@@ -103,7 +104,7 @@ namespace de4dot.tests {
 		///     and its neighbours are untouched. Only an unknown INDEX forces wholesale invalidation,
 		///     because then there is no way to say which element moved.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void AnUnknownValueAtAKnownIndexOnlyClobbersThatElement() {
 			var module = IL.Module();
 
@@ -122,7 +123,7 @@ namespace de4dot.tests {
 				IL.Ldc(1), IL.Op(OpCodes.Ldelem_I4)));
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AnOutOfRangeStoreInvalidatesRatherThanBeingIgnored() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module);
@@ -133,7 +134,7 @@ namespace de4dot.tests {
 				IL.Ldc(0), IL.Op(OpCodes.Ldelem_I4)));
 		}
 
-		[Fact]
+		[TestMethod]
 		public void ReadingOutOfRangeIsUnknownRatherThanThrowing() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module);
@@ -142,7 +143,7 @@ namespace de4dot.tests {
 				IL.Ldc(11), IL.Op(OpCodes.Ldelem_I4)));
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AnUnknownIndexReadsUnknownEvenFromAFullyKnownArray() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Params: 1);
@@ -156,7 +157,7 @@ namespace de4dot.tests {
 		///     A tracked array reached through a local is the same array. Real IL aliases it, so a
 		///     store seen through one reference must be visible through the other.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void StoresThroughALocalAliasTheSameArray() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32ArrayLocals: 1);
@@ -167,7 +168,7 @@ namespace de4dot.tests {
 				IL.Ldloc(local), IL.Ldc(0), IL.Op(OpCodes.Ldelem_I4)));
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AnInvalidationThroughOneAliasIsVisibleThroughTheOther() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Params: 1, int32ArrayLocals: 1);
@@ -183,7 +184,7 @@ namespace de4dot.tests {
 		///     Only 4-byte integer arrays are tracked. A narrower element type would truncate on
 		///     store, so tracking one would report a value the array cannot actually hold.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void ANonInt32ArrayIsNotTracked() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module);
@@ -193,7 +194,7 @@ namespace de4dot.tests {
 				IL.Ldc(0), IL.Op(OpCodes.Ldelem_I4)));
 		}
 
-		[Fact]
+		[TestMethod]
 		public void ANarrowingStoreIntoATrackedArrayInvalidatesIt() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module);
@@ -205,7 +206,7 @@ namespace de4dot.tests {
 				IL.Ldc(0), IL.Op(OpCodes.Ldelem_I4)));
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AnArrayWithAnUnknownLengthIsNotTracked() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Params: 1);
@@ -219,7 +220,7 @@ namespace de4dot.tests {
 		///     A tracked array must not survive into the next method the emulator is pointed at. It is
 		///     mutated in place, so a leak would let one method's stores be read back in another.
 		/// </summary>
-		[Fact]
+		[TestMethod]
 		public void ATrackedArrayDoesNotSurviveReinitialisation() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32Locals: 1);

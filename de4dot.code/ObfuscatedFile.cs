@@ -892,7 +892,7 @@ namespace de4dot.code {
 		/// </summary>
 		static bool NeverTerminates(MethodDef method) {
 			try {
-				return StateMachineTracer.Trace(new Blocks(method), method).Verdict == StateMachineVerdict.Loops;
+				return StateMachineTracer.Trace(new Blocks(method), method).Verdict == StateMachineTracerResult.Loops;
 			}
 			catch {
 				return false;	// a diagnostic must never decide the pipeline by throwing

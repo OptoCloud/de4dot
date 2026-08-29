@@ -23,7 +23,7 @@ using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 
 namespace de4dot.blocks.cflow {
-	public enum StateMachineVerdict {
+	public enum StateMachineTracerResult {
 		/// <summary>
 		///     An exit is reachable somewhere in the over-approximated machine.
 		///
@@ -47,7 +47,7 @@ namespace de4dot.blocks.cflow {
 	}
 
 	public class StateMachineTrace {
-		public StateMachineVerdict Verdict { get; set; }
+		public StateMachineTracerResult Verdict { get; set; }
 
 		/// <summary>Switch operand values in the order the trace saw them.</summary>
 		public List<int> States { get; } = new List<int>();
@@ -115,7 +115,7 @@ namespace de4dot.blocks.cflow {
 		///     version keyed the visited set on a string built from <c>Block.GetHashCode()</c>, which
 		///     silently merged two genuinely different configurations whenever two blocks collided —
 		///     dropping part of the reachable set. The set being complete is the entire basis for a
-		///     <see cref="StateMachineVerdict.Loops"/> verdict, so it must not depend on hash luck.
+		///     <see cref="StateMachineTracerResult.Loops"/> verdict, so it must not depend on hash luck.
 		/// </summary>
 		sealed class Configuration : IEquatable<Configuration> {
 			public readonly Block Block;
@@ -158,7 +158,7 @@ namespace de4dot.blocks.cflow {
 		///     Trace <paramref name="method"/>'s dispatch machine from the method entry.
 		/// </summary>
 		public static StateMachineTrace Trace(Blocks blocks, MethodDef method) {
-			var result = new StateMachineTrace { Verdict = StateMachineVerdict.Undecidable };
+			var result = new StateMachineTrace { Verdict = StateMachineTracerResult.Undecidable };
 			var all = blocks.MethodBlocks.GetAllBlocks();
 			if (all.Count == 0)
 				return result;
@@ -241,7 +241,7 @@ namespace de4dot.blocks.cflow {
 						break;
 				}
 				if (exits) {
-					result.Verdict = StateMachineVerdict.ExitReachable;
+					result.Verdict = StateMachineTracerResult.ExitReachable;
 					return result;
 				}
 
@@ -298,7 +298,7 @@ namespace de4dot.blocks.cflow {
 			// No exit anywhere in the set -- but that only proves anything if the set is complete.
 			if (incomplete)
 				return result;
-			result.Verdict = StateMachineVerdict.Loops;
+			result.Verdict = StateMachineTracerResult.Loops;
 			return result;
 		}
 

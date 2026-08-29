@@ -20,9 +20,9 @@
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 using de4dot.blocks.cflow;
-using Xunit;
 
-namespace de4dot.tests {
+
+namespace de4dot.blocks.tests {
 	/// <summary>
 	///     A tracked array handed to anything the emulator does not model.
 	///
@@ -36,7 +36,8 @@ namespace de4dot.tests {
 	///     how the C# compiler itself emits <c>int[] x = { ... }</c> once the initializer has a few
 	///     elements, so the shape occurs in ordinary assemblies.
 	/// </summary>
-	public class TrackedArrayEscapeTests {
+	[TestClass]
+	public sealed class TrackedArrayEscapeTests {
 		static MethodDef Consumer(ModuleDef module, TypeDef type, string name) {
 			var consumer = new MethodDefUser(name,
 				MethodSig.CreateStatic(module.CorLibTypes.Void, new SZArraySig(module.CorLibTypes.Int32)),
@@ -59,7 +60,7 @@ namespace de4dot.tests {
 					"been rewritten by code it did not model");
 		}
 
-		[Fact]
+		[TestMethod]
 		public void PassingTheArrayToACallInvalidatesIt() {
 			var module = IL.Module();
 			var type = IL.AddType(module);
@@ -75,7 +76,7 @@ namespace de4dot.tests {
 				"after passing the array to a call");
 		}
 
-		[Fact]
+		[TestMethod]
 		public void WritingThroughLdelemaInvalidatesTheArray() {
 			var module = IL.Module();
 			var method = IL.StaticMethod(module, int32ArrayLocals: 1);
@@ -92,7 +93,7 @@ namespace de4dot.tests {
 				"after writing through ldelema/stind.i4");
 		}
 
-		[Fact]
+		[TestMethod]
 		public void AnUnwrittenElementIsNotAssumedZeroAfterAnEscape() {
 			var module = IL.Module();
 			var type = IL.AddType(module);
