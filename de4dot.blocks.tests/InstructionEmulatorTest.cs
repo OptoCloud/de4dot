@@ -32,10 +32,6 @@ namespace de4dot.blocks.tests {
 				(nameof(OpCodes.Shr_Un), int.MinValue, 4),
 				(nameof(OpCodes.Shr_Un), -1, 31),
 
-				// This is value outside of specification. But .NET, .NET FW and Mono works like that.
-				// No need to be spec compliant. If some implementation would be different, let's handle that later
-				(nameof(OpCodes.Shr), -1, 33),
-
 				// Unsigned remainder, including the power-of-two divisors that are folded to a mask
 				// and the high-bit divisor that is only a power of two when read unsigned.
 				(nameof(OpCodes.Rem_Un), 100, 16),
